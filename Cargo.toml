@@ -1,0 +1,38 @@
+[package]
+name = "runsite"
+version = "0.1.0"
+edition = "2021"
+description = "RunSite CLI — deploy and manage your services from the terminal"
+license = "MIT"
+
+[[bin]]
+name = "runsite"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"], default-features = false }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+toml = "0.8"
+dirs = "5"
+crossterm = "0.27"
+tabled = { version = "0.15", features = ["ansi"] }
+colored = "2"
+indicatif = "0.17"
+dialoguer = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+url = "2"
+hostname = "0.4.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
