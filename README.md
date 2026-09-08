@@ -1,7 +1,38 @@
-# runsite CLI
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-runsite-dark.svg">
+    <img src="assets/logo-runsite.svg" alt="Runsite" width="220" />
+  </picture>
+</p>
 
-Command-line tool for the [RunSite](https://runsite.app) platform. Manage web
-services, deployments and environment variables from your terminal or from CI.
+<h1 align="center">Runsite CLI</h1>
+
+<p align="center">
+  Deploy and manage your Runsite services from the terminal — web services,
+  deployments, logs and environment variables, scriptable from any CI.
+</p>
+
+<p align="center">
+  <a href="https://runsite.app">runsite.app</a> ·
+  <a href="https://docs.runsite.app">Documentation</a> ·
+  <a href="https://docs.runsite.app/cli/overview/">CLI Docs</a> ·
+  <a href="https://docs.runsite.app/api-reference/public-api/">API Reference</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black" alt="Rust" />
+  <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-4169E1" alt="Platforms" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
+</p>
+
+---
+
+## What is the Runsite CLI?
+
+`runsite` is a single static binary that talks to the [Runsite](https://runsite.app)
+public API. It lets you trigger deployments, tail logs, manage environment variables
+and switch between projects without leaving your shell — interactively on your
+machine, or non-interactively in a CI pipeline with an API token.
 
 ## Install
 
@@ -19,14 +50,16 @@ irm https://raw.githubusercontent.com/runsite-platform/runsite-cli/master/instal
 
 The scripts detect your OS and architecture, download the matching binary from
 GitHub Releases, verify its SHA-256 checksum, and install it
-(`~/.local/bin/runsite` on Unix, `%LOCALAPPDATA%\runsite\bin\runsite.exe` on
-Windows).
+(`~/.local/bin/runsite` on Unix, `%LOCALAPPDATA%\runsite\bin\runsite.exe` on Windows).
 
-Pin a version with `RUNSITE_VERSION=v0.1.0` (or `$env:RUNSITE_VERSION` on
-Windows). Override the install directory with `RUNSITE_INSTALL_DIR`.
+| Variable | Purpose |
+|---|---|
+| `RUNSITE_VERSION` | Pin a release, e.g. `v0.1.0` (default: latest) |
+| `RUNSITE_INSTALL_DIR` | Override the install directory |
+| `RUNSITE_REPO` | Override the source repository |
 
-Prebuilt targets: `x86_64`/`aarch64` Linux (musl, static), `x86_64`/`aarch64`
-macOS, `x86_64` Windows.
+Prebuilt targets: `x86_64`/`aarch64` Linux (musl, static), `x86_64`/`aarch64` macOS,
+`x86_64` Windows.
 
 ## Authenticate
 
@@ -35,53 +68,43 @@ runsite login                          # email + password, mints an API key
 runsite login --token ak_live_...      # use a key created in the dashboard
 ```
 
-`--token` is the path for accounts that sign in with Google or GitHub and have
-no password.
-
-In CI, skip `login` entirely and set `RUNSITE_API_TOKEN=ak_live_...`.
+`--token` is the path for accounts that sign in with Google or GitHub and have no
+password. In CI, skip `login` entirely and set `RUNSITE_API_TOKEN=ak_live_...`.
 
 ## Commands
 
-```
-runsite login [--token ak_live_...]    # authenticate
-runsite logout
-runsite whoami
+| Group | Commands |
+|---|---|
+| **Auth** | `login [--token]` · `logout` · `whoami` |
+| **Services** | `service list` · `service status` · `service start\|stop\|restart` |
+| **Deploys** | `deploy [service]` — trigger a deployment |
+| **Logs** | `logs [service] [--tail 100]` — recent container logs |
+| **Env vars** | `env list` · `env set KEY=VALUE ...` · `env delete KEY` |
+| **Projects** | `project list` · `project use [name\|id]` |
+| **Context** | `context show` · `context set-url https://api.runsite.app` |
+| **Shell** | `completions bash\|zsh\|fish` |
 
+```bash
 runsite service list
-runsite service status [name|id]
-runsite service start|stop|restart [name|id]
-
-runsite deploy [service]               # trigger a deployment
-runsite logs [service] [--tail 100]    # recent container logs
-
-runsite env list [service]
-runsite env set [service] KEY=VALUE KEY2=VALUE2
-runsite env delete [service] KEY
-
-runsite project list
-runsite project use [name|id]
-
-runsite context show
-runsite context set-url https://api.runsite.app
-
-runsite completions bash|zsh|fish
+runsite deploy api --output json
+runsite env set api DATABASE_URL=postgres://... LOG_LEVEL=debug
+runsite logs api --tail 200
 ```
 
-Every data command also accepts `--output json` for scripting.
-
-The service argument is optional: with a single service (or a single service in
-the selected project) the CLI resolves it automatically.
+Every data command accepts `--output json` for scripting. The service argument is
+optional: with a single service (or a single service in the selected project) the
+CLI resolves it automatically.
 
 ### Not in this release
 
-`runsite shell`, `runsite run` and `runsite deploy --watch` need a live
-WebSocket, which the public API does not expose to API keys yet. The commands
-exist and tell you to use the dashboard instead.
+`runsite shell`, `runsite run` and `runsite deploy --watch` need a live WebSocket,
+which the public API does not expose to API keys yet. The commands exist and point
+you to the dashboard instead.
 
 ## Configuration
 
-Config lives at `~/.config/runsite/config.toml` (`%APPDATA%\runsite` on
-Windows) and holds one entry per profile:
+Config lives at `~/.config/runsite/config.toml` (`%APPDATA%\runsite` on Windows) and
+holds one entry per profile:
 
 ```toml
 current_profile = "default"
@@ -95,6 +118,22 @@ current_project_id = "..."
 Select a profile with `--profile staging` or `RUNSITE_PROFILE=staging`.
 `RUNSITE_API_TOKEN` overrides the stored key.
 
+## Repository layout
+
+```
+.
+├── src/
+│   ├── main.rs         # entry point
+│   ├── cli.rs          # clap command definitions
+│   ├── commands/       # one module per command group
+│   ├── api/            # public API client + response types
+│   ├── config/         # profile config file handling
+│   ├── output/         # table / JSON formatting
+│   └── ws/             # WebSocket transports (logs, shell)
+├── install/            # install.sh and install.ps1
+└── .github/workflows/  # CI and multi-target release builds
+```
+
 ## Build
 
 **Requirements:** Rust 1.75+ — install via [rustup.rs](https://rustup.rs)
@@ -105,7 +144,7 @@ cargo build --release    # optimized (~4.5 MB binary)
 # binary: target/release/runsite
 ```
 
-## Cross-compile
+### Cross-compile
 
 Install [cross](https://github.com/cross-rs/cross) (requires Docker):
 
@@ -115,7 +154,7 @@ cross build --release --target x86_64-unknown-linux-musl
 cross build --release --target aarch64-unknown-linux-musl
 ```
 
-## Release
+### Release
 
 Tag the repository; the `Release` workflow builds all five targets, generates
 `SHA256SUMS.txt` and publishes a GitHub Release:
@@ -125,6 +164,13 @@ cargo set-version 0.2.0   # or edit Cargo.toml
 git tag v0.2.0 && git push origin v0.2.0
 ```
 
+## Documentation
+
+- **CLI guide:** [docs.runsite.app/cli/overview](https://docs.runsite.app/cli/overview/)
+- **Public API:** [docs.runsite.app/api-reference/public-api](https://docs.runsite.app/api-reference/public-api/)
+- **All docs:** [docs.runsite.app](https://docs.runsite.app)
+- **Dashboard:** [runsite.app](https://runsite.app)
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
