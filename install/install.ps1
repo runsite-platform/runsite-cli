@@ -1,7 +1,7 @@
 # RunSite CLI installer for Windows.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/runsite-platform/runsite-cli/master/install/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/runsite-platform/runsite-cli/main/install/install.ps1 | iex
 #
 # Environment overrides:
 #   $env:RUNSITE_VERSION     pin a specific version (e.g. v0.1.0). Default: latest

@@ -2,7 +2,7 @@
 # RunSite CLI installer for Linux and macOS.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/runsite-platform/runsite-cli/master/install/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/runsite-platform/runsite-cli/main/install/install.sh | sh
 #
 # Environment overrides:
 #   RUNSITE_VERSION     pin a specific version (e.g. v0.1.0). Default: latest

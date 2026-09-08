@@ -39,13 +39,13 @@ machine, or non-interactively in a CI pipeline with an API token.
 **Linux / macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/runsite-platform/runsite-cli/master/install/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/runsite-platform/runsite-cli/main/install/install.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://raw.githubusercontent.com/runsite-platform/runsite-cli/master/install/install.ps1 | iex
+irm https://raw.githubusercontent.com/runsite-platform/runsite-cli/main/install/install.ps1 | iex
 ```
 
 The scripts detect your OS and architecture, download the matching binary from
