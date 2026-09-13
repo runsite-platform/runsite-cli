@@ -8,11 +8,28 @@ mod ws;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands, ContextCommands, EnvCommands, ProjectCommands, ServiceCommands};
+use cli::{
+    Cli, Commands, ContextCommands, DeploymentCommands, EnvCommands, ProjectCommands,
+    ServiceCommands,
+};
 use std::sync::{Arc, Mutex};
+
+/// Rust masks SIGPIPE at startup, so writing to a closed pipe raises an IO
+/// error that `println!` turns into a panic. Restoring the default handler
+/// makes `runsite service list | head` exit quietly like every other CLI.
+#[cfg(unix)]
+fn restore_default_sigpipe() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn restore_default_sigpipe() {}
 
 #[tokio::main]
 async fn main() {
+    restore_default_sigpipe();
     let cli = Cli::parse();
     if let Err(err) = run(cli).await {
         eprintln!("{}: {}", "error".red(), err);
@@ -53,7 +70,10 @@ async fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Service(sub) => match sub {
-            ServiceCommands::List => commands::service::list(&client, format).await?,
+            ServiceCommands::List { all } => commands::service::list(&client, all, format).await?,
+            ServiceCommands::Create(args) => {
+                commands::service::create(&client, &args, format).await?
+            }
             ServiceCommands::Status { service } => {
                 commands::service::status(&client, service.as_deref(), format).await?
             }
@@ -71,6 +91,19 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Deploy { service, watch } => {
             commands::deploy::trigger(&client, service.as_deref(), watch).await?;
         }
+
+        Commands::Deployments(sub) => match sub {
+            DeploymentCommands::List { service, limit } => {
+                commands::deployments::list(&client, service.as_deref(), limit, format).await?
+            }
+            DeploymentCommands::Rollback {
+                deployment,
+                service,
+            } => {
+                commands::deployments::rollback(&client, service.as_deref(), &deployment, format)
+                    .await?
+            }
+        },
 
         Commands::Logs { service, tail } => {
             commands::logs::tail(&client, service.as_deref(), tail, format).await?;
@@ -101,10 +134,13 @@ async fn run(cli: Cli) -> Result<()> {
             ProjectCommands::Use { project } => {
                 commands::project::use_project(&client, config, &profile_name, &project).await?
             }
+            ProjectCommands::Unset => commands::project::unset_project(config, &profile_name)?,
         },
 
         Commands::Context(sub) => match sub {
-            ContextCommands::Show => commands::context::show(config, &profile_name)?,
+            ContextCommands::Show => {
+                commands::context::show(&client, config, &profile_name).await?
+            }
             ContextCommands::SetUrl { url } => {
                 commands::context::set_url(config, &profile_name, &url)?
             }

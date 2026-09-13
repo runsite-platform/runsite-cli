@@ -63,12 +63,71 @@ pub struct ContainerLogs {
     pub logs: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct EnvVarCreate {
+    pub key: String,
+    pub value: String,
+    pub is_secret: bool,
+}
+
+// Only fields the user chose are sent, so the API applies its own defaults
+// (port 8080, one instance, branch `main`, ...) to everything else.
+#[derive(Debug, Serialize, Default)]
+pub struct WebServiceCreate {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_repository_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dockerfile_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_instances: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u8>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_deploy: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub env_vars: Vec<EnvVarCreate>,
+}
+
 // Deployments
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Deployment {
     pub id: Uuid,
     pub status: String,
+    pub branch: Option<String>,
+    pub commit_sha: Option<String>,
+    pub commit_message: Option<String>,
+    #[serde(default)]
+    pub is_live: bool,
+    pub trigger_type: Option<String>,
+    pub error_message: Option<String>,
+    pub rollback_from_deployment_id: Option<Uuid>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeploymentList {
+    pub deployments: Vec<Deployment>,
+    pub total: i64,
 }
 
 // Environment Variables
@@ -183,6 +242,58 @@ mod tests {
 
         let parsed: WebServiceList = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.web_services[0].url, None);
+    }
+
+    #[test]
+    fn deployment_list_reads_the_deployments_key() {
+        let json = r#"{
+            "deployments": [
+                {"id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b", "web_service_id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b",
+                 "commit_sha": "a1b2c3d4e5f6", "commit_message": "fix: login", "branch": "main",
+                 "status": "running", "is_live": true, "build_logs": null, "error_message": null,
+                 "started_at": null, "finished_at": null, "trigger_type": "manual",
+                 "created_at": "2026-01-01T00:00:00Z"}
+            ],
+            "total": 1
+        }"#;
+
+        let parsed: DeploymentList = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.total, 1);
+        assert!(parsed.deployments[0].is_live);
+        assert_eq!(parsed.deployments[0].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_minimal_create_body_sends_only_the_name() {
+        let body = WebServiceCreate {
+            name: "api".to_string(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json, serde_json::json!({ "name": "api" }));
+    }
+
+    #[test]
+    fn a_create_body_carries_the_chosen_fields() {
+        let body = WebServiceCreate {
+            name: "api".to_string(),
+            git_repository_url: Some("https://github.com/me/api".to_string()),
+            port: Some(3000),
+            auto_deploy: true,
+            env_vars: vec![EnvVarCreate {
+                key: "PORT".to_string(),
+                value: "3000".to_string(),
+                is_secret: true,
+            }],
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["port"], 3000);
+        assert_eq!(json["auto_deploy"], true);
+        assert_eq!(json["env_vars"][0]["key"], "PORT");
+        assert!(json.get("image_ref").is_none());
     }
 
     #[test]

@@ -10,6 +10,65 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
+/// True when `service` sits in `project_id`, or when no project is selected.
+pub fn belongs_to_project(service: &WebService, project_id: Option<&str>) -> bool {
+    match project_id {
+        Some(pid) => service.project_id.map(|id| id.to_string()).as_deref() == Some(pid),
+        None => true,
+    }
+}
+
+/// Error `detail` is a plain string, or for 422 a list of `{loc, msg}` entries.
+fn describe_error_detail(detail: &Value) -> Option<String> {
+    if let Some(text) = detail.as_str() {
+        return Some(text.to_string());
+    }
+
+    let problems: Vec<String> = detail
+        .as_array()?
+        .iter()
+        .filter_map(|problem| {
+            let message = problem["msg"].as_str()?;
+            let field = problem["loc"]
+                .as_array()
+                .and_then(|location| location.last())
+                .and_then(|last| last.as_str());
+            Some(match field {
+                Some(field) => format!("{}: {}", field, message),
+                None => message.to_string(),
+            })
+        })
+        .collect();
+
+    (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+fn match_id_prefix(ids: &[Uuid], prefix: &str) -> Result<Uuid> {
+    let prefix = prefix.to_lowercase();
+    if prefix.len() < 4 {
+        return Err(anyhow!(
+            "deployment ID '{}' is too short, use at least 4 characters",
+            prefix
+        ));
+    }
+
+    let matched: Vec<_> = ids
+        .iter()
+        .filter(|id| id.to_string().starts_with(&prefix))
+        .collect();
+    match matched.len() {
+        0 => Err(anyhow!(
+            "deployment '{}' not found among the last 100 deployments",
+            prefix
+        )),
+        1 => Ok(*matched[0]),
+        _ => Err(anyhow!(
+            "deployment ID '{}' is ambiguous, use more characters",
+            prefix
+        )),
+    }
+}
+
 #[derive(Clone)]
 pub struct ApiClient {
     http: Client,
@@ -32,6 +91,16 @@ impl ApiClient {
             config,
             profile_name,
         }
+    }
+
+    /// Project selected with `runsite project use`, if any.
+    pub fn current_project_id(&self) -> Option<String> {
+        self.config
+            .lock()
+            .unwrap()
+            .profiles
+            .get(&self.profile_name)
+            .and_then(|p| p.current_project_id.clone())
     }
 
     fn auth_token(&self) -> Option<String> {
@@ -68,7 +137,7 @@ impl ApiClient {
                 .json::<Value>()
                 .await
                 .ok()
-                .and_then(|v| v["detail"].as_str().map(|s| s.to_string()))
+                .and_then(|body| describe_error_detail(&body["detail"]))
                 .unwrap_or_else(|| status.to_string());
 
             Err(ApiError::Http {
@@ -181,30 +250,18 @@ impl ApiClient {
 
         let list: WebServiceList = self.get("/api/v1/web-services").await?;
 
-        let project_id = self
-            .config
-            .lock()
-            .unwrap()
-            .profiles
-            .get(&self.profile_name)
-            .and_then(|p| p.current_project_id.clone());
+        let project_id = self.current_project_id();
 
         let candidates: Vec<_> = list
             .web_services
             .iter()
-            .filter(|s| {
-                if let Some(pid) = &project_id {
-                    s.project_id.map(|id| id.to_string()).as_deref() == Some(pid.as_str())
-                } else {
-                    true
-                }
-            })
+            .filter(|s| belongs_to_project(s, project_id.as_deref()))
             .collect();
 
         if let Some(name) = name_or_id {
             let matched: Vec<_> = candidates.iter().filter(|s| s.name == name).collect();
             match matched.len() {
-                0 => Err(anyhow!("service '{}' not found", name)),
+                0 => Err(self.service_not_found_error(name, &list).await),
                 1 => Ok(matched[0].id),
                 _ => {
                     let ids: Vec<_> = matched
@@ -236,6 +293,92 @@ impl ApiClient {
         }
     }
 
+    pub async fn resolve_project_id(&self, name_or_id: &str) -> Result<Uuid> {
+        if let Ok(id) = Uuid::parse_str(name_or_id) {
+            return Ok(id);
+        }
+
+        let data: ProjectList = self.get("/api/v1/projects").await?;
+        let matched: Vec<_> = data
+            .projects
+            .iter()
+            .filter(|p| p.name == name_or_id)
+            .collect();
+
+        match matched.len() {
+            0 => Err(anyhow!("project '{}' not found", name_or_id)),
+            1 => Ok(matched[0].id),
+            _ => Err(anyhow!("multiple projects named '{}'", name_or_id)),
+        }
+    }
+
+    /// Accepts a full deployment ID or the short prefix printed by `deployments list`.
+    pub async fn resolve_deployment_id(
+        &self,
+        service_id: Uuid,
+        id_or_prefix: &str,
+    ) -> Result<Uuid> {
+        if let Ok(id) = Uuid::parse_str(id_or_prefix) {
+            return Ok(id);
+        }
+
+        let data: DeploymentList = self
+            .get(&format!(
+                "/api/v1/web-services/{}/deployments?limit=100",
+                service_id
+            ))
+            .await?;
+        let ids: Vec<Uuid> = data.deployments.iter().map(|d| d.id).collect();
+        match_id_prefix(&ids, id_or_prefix)
+    }
+
+    /// Build the error for a name that resolved to nothing in the current project.
+    ///
+    /// `service list` and this resolver used to disagree: the list showed every
+    /// service on the account while the resolver only accepted ones in the
+    /// selected project, so a name printed by the list could still be rejected
+    /// here. The list now filters too, and this points at the owning project
+    /// whenever the name exists somewhere else.
+    async fn service_not_found_error(&self, name: &str, list: &WebServiceList) -> anyhow::Error {
+        let elsewhere: Vec<_> = list
+            .web_services
+            .iter()
+            .filter(|s| s.name == name)
+            .collect();
+
+        let Some(service) = elsewhere.first() else {
+            return anyhow!("service '{}' not found", name);
+        };
+
+        let owner = match service.project_id {
+            Some(project_id) => self.project_name(project_id).await,
+            None => None,
+        };
+
+        match owner {
+            Some(project_name) => anyhow!(
+                "service '{}' belongs to project '{}'. Switch with: runsite project use \"{}\"",
+                name,
+                project_name,
+                project_name
+            ),
+            None => anyhow!(
+                "service '{}' is not in the current project. See all services with: runsite service list --all",
+                name
+            ),
+        }
+    }
+
+    /// Best-effort project name lookup; falls back to `None` when the extra
+    /// request fails, so error reporting never masks the original problem.
+    pub async fn project_name(&self, project_id: Uuid) -> Option<String> {
+        let list: ProjectList = self.get("/api/v1/projects").await.ok()?;
+        list.projects
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.name)
+    }
+
     // WebSocket URL helper: replaces http(s) scheme with ws(s)
     // Dormant under API-key auth: WebSocket routes are JWT-only. Kept for future rewiring.
     #[allow(dead_code)]
@@ -250,5 +393,100 @@ impl ApiClient {
     #[allow(dead_code)]
     pub fn ws_token(&self) -> Option<String> {
         self.auth_token()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn service(name: &str, project_id: Option<&str>) -> WebService {
+        WebService {
+            id: Uuid::parse_str("8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b").unwrap(),
+            name: name.to_string(),
+            status: Some("running".to_string()),
+            url: None,
+            updated_at: None,
+            project_id: project_id.map(|id| Uuid::parse_str(id).unwrap()),
+        }
+    }
+
+    const PROJECT: &str = "ca83c4a9-1517-4fe3-93aa-bbdab4eaee23";
+    const OTHER_PROJECT: &str = "8d5b5e8e-2348-4a29-8c05-bcfa1e599ef2";
+
+    #[test]
+    fn a_service_in_the_selected_project_belongs_to_it() {
+        assert!(belongs_to_project(
+            &service("api", Some(PROJECT)),
+            Some(PROJECT)
+        ));
+    }
+
+    #[test]
+    fn a_service_from_another_project_is_filtered_out() {
+        assert!(!belongs_to_project(
+            &service("api", Some(OTHER_PROJECT)),
+            Some(PROJECT)
+        ));
+    }
+
+    #[test]
+    fn every_service_is_listed_when_no_project_is_selected() {
+        assert!(belongs_to_project(&service("api", Some(PROJECT)), None));
+        assert!(belongs_to_project(&service("api", None), None));
+    }
+
+    const DEPLOYMENT: &str = "3f2a1b4c-0000-4000-8000-000000000001";
+    const SIBLING_DEPLOYMENT: &str = "3f2a9999-0000-4000-8000-000000000002";
+
+    fn deployment_ids() -> Vec<Uuid> {
+        vec![
+            Uuid::parse_str(DEPLOYMENT).unwrap(),
+            Uuid::parse_str(SIBLING_DEPLOYMENT).unwrap(),
+        ]
+    }
+
+    #[test]
+    fn a_validation_error_names_each_field() {
+        let detail = serde_json::json!([
+            {"loc": ["body", "port"], "msg": "Input should be less than or equal to 65535"},
+            {"loc": ["body", "env_vars", 0, "key"], "msg": "String should match pattern"}
+        ]);
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "port: Input should be less than or equal to 65535; key: String should match pattern"
+        );
+    }
+
+    #[test]
+    fn a_plain_error_detail_is_kept_as_is() {
+        let detail = serde_json::json!("Web service not found");
+        assert_eq!(
+            describe_error_detail(&detail).as_deref(),
+            Some("Web service not found")
+        );
+    }
+
+    #[test]
+    fn a_unique_prefix_resolves_to_its_deployment() {
+        let resolved = match_id_prefix(&deployment_ids(), "3F2A1B4C").unwrap();
+        assert_eq!(resolved.to_string(), DEPLOYMENT);
+    }
+
+    #[test]
+    fn an_ambiguous_prefix_is_rejected() {
+        let error = match_id_prefix(&deployment_ids(), "3f2a").unwrap_err();
+        assert!(error.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn an_unknown_or_too_short_prefix_is_rejected() {
+        assert!(match_id_prefix(&deployment_ids(), "ffff").is_err());
+        assert!(match_id_prefix(&deployment_ids(), "3f").is_err());
+    }
+
+    #[test]
+    fn a_service_without_a_project_is_filtered_out_under_a_selection() {
+        assert!(!belongs_to_project(&service("api", None), Some(PROJECT)));
     }
 }

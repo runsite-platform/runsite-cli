@@ -76,17 +76,21 @@ password. In CI, skip `login` entirely and set `RUNSITE_API_TOKEN=ak_live_...`.
 | Group | Commands |
 |---|---|
 | **Auth** | `login [--token]` · `logout` · `whoami` |
-| **Services** | `service list` · `service status` · `service start\|stop\|restart` |
+| **Services** | `service list [--all]` · `service create` · `service status` · `service start\|stop\|restart` |
 | **Deploys** | `deploy [service]` — trigger a deployment |
+| **Deployments** | `deployments list [service] [--limit 10]` · `deployments rollback <id> [service]` |
 | **Logs** | `logs [service] [--tail 100]` — recent container logs |
 | **Env vars** | `env list` · `env set KEY=VALUE ...` · `env delete KEY` |
-| **Projects** | `project list` · `project use [name\|id]` |
+| **Projects** | `project list` · `project use [name\|id]` · `project unset` |
 | **Context** | `context show` · `context set-url https://api.runsite.app` |
 | **Shell** | `completions bash\|zsh\|fish` |
 
 ```bash
 runsite service list
+runsite service create api --repo https://github.com/me/api --port 3000 --env LOG_LEVEL=info
 runsite deploy api --output json
+runsite deployments list api
+runsite deployments rollback 3f2a1b4c api
 runsite env set api DATABASE_URL=postgres://... LOG_LEVEL=debug
 runsite logs api --tail 200
 ```

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -56,6 +56,10 @@ pub enum Commands {
         watch: bool,
     },
 
+    /// List deployments and roll back
+    #[command(subcommand, visible_alias = "deployment")]
+    Deployments(DeploymentCommands),
+
     /// Show recent logs from a service
     Logs {
         /// Service name or ID
@@ -103,8 +107,15 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
-    /// List all web services
-    List,
+    /// List web services in the current project
+    List {
+        /// List services from every project, not just the selected one
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Create a web service from a git repository or a container image
+    Create(Box<ServiceCreateArgs>),
 
     /// Show service status
     Status {
@@ -126,6 +137,108 @@ pub enum ServiceCommands {
 
     /// Restart a service
     Restart {
+        /// Service name or ID
+        service: Option<String>,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+pub enum ServiceType {
+    WebService,
+    StaticSite,
+    Worker,
+}
+
+impl ServiceType {
+    pub fn as_api_value(self) -> &'static str {
+        match self {
+            ServiceType::WebService => "web_service",
+            ServiceType::StaticSite => "static_site",
+            ServiceType::Worker => "worker",
+        }
+    }
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("source").required(true).args(["repo", "image"])))]
+pub struct ServiceCreateArgs {
+    /// Service name
+    pub name: String,
+
+    /// Git repository URL to build from
+    #[arg(long)]
+    pub repo: Option<String>,
+
+    /// Container image to run instead of building (e.g. nginx:1.27)
+    #[arg(long, conflicts_with_all = ["branch", "build_command", "dockerfile", "root_dir", "auto_deploy"])]
+    pub image: Option<String>,
+
+    /// Git branch to deploy (default: main)
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Project name or ID (default: the current project)
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// Service type
+    #[arg(long = "type", value_enum)]
+    pub service_type: Option<ServiceType>,
+
+    /// Port the app listens on (default: 8080)
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    pub port: Option<u16>,
+
+    /// Build command
+    #[arg(long)]
+    pub build_command: Option<String>,
+
+    /// Start command
+    #[arg(long)]
+    pub start_command: Option<String>,
+
+    /// Path to the Dockerfile inside the repository
+    #[arg(long)]
+    pub dockerfile: Option<String>,
+
+    /// Subdirectory of the repository to build from
+    #[arg(long)]
+    pub root_dir: Option<String>,
+
+    /// Minimum number of instances (1-5)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=5))]
+    pub min_instances: Option<u8>,
+
+    /// Maximum number of instances (1-5)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=5))]
+    pub max_instances: Option<u8>,
+
+    /// Redeploy automatically on every push to the branch
+    #[arg(long)]
+    pub auto_deploy: bool,
+
+    /// Environment variable in KEY=VALUE format, stored as a secret (repeatable)
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env_vars: Vec<String>,
+}
+
+#[derive(Subcommand)]
+pub enum DeploymentCommands {
+    /// List recent deployments of a service
+    List {
+        /// Service name or ID
+        service: Option<String>,
+
+        /// Number of deployments to show (1-100)
+        #[arg(long, short, default_value = "10", value_parser = clap::value_parser!(u8).range(1..=100))]
+        limit: u8,
+    },
+
+    /// Roll a service back to a previous deployment
+    Rollback {
+        /// Deployment ID or its short prefix from `deployments list`
+        deployment: String,
+
         /// Service name or ID
         service: Option<String>,
     },
@@ -170,6 +283,9 @@ pub enum ProjectCommands {
         /// Project name or ID
         project: String,
     },
+
+    /// Clear the current project context
+    Unset,
 }
 
 #[derive(Subcommand)]
