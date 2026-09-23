@@ -1,4 +1,5 @@
 mod action;
+mod actions;
 mod app;
 mod dashboard;
 mod detail;

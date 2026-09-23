@@ -28,6 +28,46 @@ pub enum Request {
     Database(Uuid),
 }
 
+/// A request that changes remote state. Only sent after `y` in the confirm modal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mutation {
+    Deploy {
+        service_id: Uuid,
+    },
+    Restart {
+        service_id: Uuid,
+    },
+    StartService {
+        service_id: Uuid,
+    },
+    StopService {
+        service_id: Uuid,
+    },
+    Rollback {
+        service_id: Uuid,
+        deployment_id: Uuid,
+    },
+    StartDatabase {
+        database_id: Uuid,
+    },
+    StopDatabase {
+        database_id: Uuid,
+    },
+}
+
+impl Mutation {
+    /// Toast shown once the API accepted the request.
+    pub fn accepted_message(&self) -> &'static str {
+        match self {
+            Mutation::Deploy { .. } => "Deployment started",
+            Mutation::Restart { .. } => "Restart requested",
+            Mutation::StartService { .. } | Mutation::StartDatabase { .. } => "Start requested",
+            Mutation::StopService { .. } | Mutation::StopDatabase { .. } => "Stop requested",
+            Mutation::Rollback { .. } => "Rollback started",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Payload {
     CurrentUser(CurrentUser),
