@@ -38,7 +38,7 @@ fn store_key(config: &Arc<Mutex<Config>>, profile_name: &str, api_key: String) -
     let mut cfg = config.lock().unwrap();
     let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
     profile.api_key = Some(api_key);
-    config::save(&cfg)
+    config::save_profile(&cfg, profile_name)
 }
 
 pub fn logout(config: Arc<Mutex<Config>>, profile_name: &str) -> Result<()> {
@@ -47,7 +47,7 @@ pub fn logout(config: Arc<Mutex<Config>>, profile_name: &str) -> Result<()> {
         if let Some(profile) = cfg.profiles.get_mut(profile_name) {
             profile.api_key = None;
         }
-        config::save(&cfg)?;
+        config::save_profile(&cfg, profile_name)?;
     }
     println!("Logged out. (The key is still active server-side; revoke it in the dashboard.)");
     Ok(())

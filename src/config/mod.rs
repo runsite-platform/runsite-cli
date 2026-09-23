@@ -3,6 +3,13 @@ pub use types::{Config, Profile};
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+
+/// Serializes read-modify-write cycles within this process; other processes
+/// are covered by re-reading the file and the atomic rename.
+static UPDATE_LOCK: Mutex<()> = Mutex::new(());
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn config_path() -> Result<PathBuf> {
     let dir = dirs::config_dir()
@@ -32,8 +39,12 @@ fn read_from(path: &Path) -> Result<Config> {
 fn write_to(path: &Path, config: &Config) -> Result<()> {
     let content = toml::to_string_pretty(config).context("failed to serialize config")?;
     // Write-then-rename, so a concurrent reader never sees a half-written file.
-    // The process id keeps two runsite processes off each other's staging file.
-    let staging = path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    // Process id and counter keep concurrent writers off each other's staging file.
+    let staging = path.with_extension(format!(
+        "toml.{}.{}.tmp",
+        std::process::id(),
+        STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(&staging, content)
         .with_context(|| format!("failed to write {}", staging.display()))?;
     // The file holds API keys: keep the permissions the user gave it.
@@ -71,12 +82,11 @@ pub fn read_current() -> Result<Config> {
     read_from(&config_path()?)
 }
 
-pub fn save(config: &Config) -> Result<()> {
-    let path = config_path()?;
-    let content = toml::to_string_pretty(config).context("failed to serialize config")?;
-    std::fs::write(&path, content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+/// Write the profile `name` from `config` to disk, keeping everything else in
+/// the file as it is now. A `--profile` override is never persisted.
+pub fn save_profile(config: &Config, name: &str) -> Result<()> {
+    let profile = config.profiles.get(name).cloned().unwrap_or_default();
+    update_profile(name, |saved| *saved = profile)
 }
 
 /// Change one profile without touching anything else in the file.
@@ -88,6 +98,9 @@ pub fn update_profile(name: &str, change: impl FnOnce(&mut Profile)) -> Result<(
 }
 
 fn update_profile_at(path: &Path, name: &str, change: impl FnOnce(&mut Profile)) -> Result<()> {
+    let _guard = UPDATE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut config = read_from(path)?;
     change(config.profiles.entry(name.to_string()).or_default());
     write_to(path, &config)
@@ -161,6 +174,36 @@ api_url = "https://staging.runsite.app"
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn concurrent_updates_in_one_process_all_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let writers: Vec<_> = (0..8)
+            .map(|index| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    update_profile_at(&path, &format!("profile{index}"), |profile| {
+                        profile.api_key = Some(format!("key{index}"))
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+
+        let result = read_from(&path).unwrap();
+        for index in 0..8 {
+            assert_eq!(
+                result.profiles[&format!("profile{index}")]
+                    .api_key
+                    .as_deref(),
+                Some(format!("key{index}").as_str())
+            );
+        }
     }
 
     #[test]
