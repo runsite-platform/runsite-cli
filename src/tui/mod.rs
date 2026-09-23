@@ -1,6 +1,7 @@
 mod action;
 mod app;
 mod dashboard;
+mod log_buffer;
 mod login;
 mod poller;
 mod status;
