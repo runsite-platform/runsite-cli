@@ -452,3 +452,26 @@ fn disabled_actions_stay_in_the_hint_bar() {
     assert!(screen.contains("R restart"));
     assert!(screen.contains("S start"));
 }
+
+#[test]
+fn wrapped_logs_keep_the_newest_line_visible() {
+    let mut app = loaded_service_detail('2');
+    let word = "x".repeat(40);
+    let mut body: String = (0..20)
+        .map(|index| format!("2026-09-23T10:00:{index:02}Z {word} {word} {word}\n"))
+        .collect();
+    body.push_str("2026-09-23T10:00:30Z newest-line\n");
+    deliver(
+        &mut app,
+        Request::Logs(API_SERVICE),
+        Payload::Logs {
+            body,
+            query: crate::tui::log_buffer::LogQuery {
+                tail: 500,
+                since: None,
+            },
+        },
+    );
+    let screen = render_text(&app, &unicode(), 80, 24);
+    assert!(screen.contains("newest-line"), "{screen}");
+}

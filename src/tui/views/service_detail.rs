@@ -10,6 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
 const LABEL_WIDTH: usize = 11;
 const SPARKLINE_WIDTH: usize = 30;
@@ -282,11 +283,37 @@ fn log_line(
     ])
 }
 
-fn rows_needed(line: &Line, width: usize, wrap: bool) -> usize {
-    if !wrap || width == 0 {
-        return 1;
+/// Split a line into rows of at most `width` columns. Wrapping here instead of
+/// in `Paragraph` keeps the row count exact, so the newest lines always fit.
+fn wrap_line(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![line];
     }
-    line.width().div_ceil(width).max(1)
+    let mut rows = vec![Vec::new()];
+    let mut row_width = 0;
+    for span in line.spans {
+        let mut piece = String::new();
+        for character in span.content.chars() {
+            let character_width = character.width().unwrap_or(0);
+            if row_width + character_width > width && row_width > 0 {
+                if !piece.is_empty() {
+                    rows.last_mut()
+                        .unwrap()
+                        .push(Span::styled(std::mem::take(&mut piece), span.style));
+                }
+                rows.push(Vec::new());
+                row_width = 0;
+            }
+            piece.push(character);
+            row_width += character_width;
+        }
+        if !piece.is_empty() {
+            rows.last_mut()
+                .unwrap()
+                .push(Span::styled(piece, span.style));
+        }
+    }
+    rows.into_iter().map(Line::from).collect()
 }
 
 fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme: &Theme) {
@@ -350,12 +377,8 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
     let width = body_area.width as usize;
     let height = body_area.height as usize;
     let end = lines.len() - logs.scroll_from_bottom.min(lines.len());
-    let mut rows = 0;
-    let mut start = end;
     let offset = if logs.wrap { 0 } else { logs.horizontal_offset };
-    let mut rendered = Vec::new();
-    while start > 0 {
-        let index = start - 1;
+    let rows_of = |index: usize| {
         let line = log_line(
             &lines[index],
             logs.is_match(index),
@@ -363,38 +386,35 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
             offset,
             theme,
         );
-        let needed = rows_needed(&line, width, logs.wrap);
-        if rows + needed > height && !rendered.is_empty() {
-            break;
+        if logs.wrap {
+            wrap_line(line, width)
+        } else {
+            vec![line]
         }
-        rows += needed;
-        rendered.push(line);
-        start = index;
+    };
+
+    // From the bottom line upwards; the topmost line may show only its last rows.
+    let mut rendered: Vec<Line> = Vec::new();
+    let mut start = end;
+    while start > 0 && rendered.len() < height {
+        start -= 1;
+        let mut rows = rows_of(start);
+        let room = height - rendered.len();
+        if rows.len() > room {
+            rows.drain(..rows.len() - room);
+        }
+        rows.append(&mut rendered);
+        rendered = rows;
     }
-    rendered.reverse();
     // Scrolled to (or near) the top: fill the rest of the pane downwards.
     let mut next = end;
-    while start == 0 && next < lines.len() {
-        let line = log_line(
-            &lines[next],
-            logs.is_match(next),
-            logs.current_match == Some(next),
-            offset,
-            theme,
-        );
-        let needed = rows_needed(&line, width, logs.wrap);
-        if rows + needed > height {
-            break;
-        }
-        rows += needed;
-        rendered.push(line);
+    while start == 0 && next < lines.len() && rendered.len() < height {
+        let rows = rows_of(next);
+        let room = height - rendered.len();
+        rendered.extend(rows.into_iter().take(room));
         next += 1;
     }
-    let mut paragraph = Paragraph::new(rendered);
-    if logs.wrap {
-        paragraph = paragraph.wrap(Wrap { trim: false });
-    }
-    frame.render_widget(paragraph, body_area);
+    frame.render_widget(Paragraph::new(rendered), body_area);
 }
 
 fn render_deploys(
