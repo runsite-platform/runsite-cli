@@ -199,6 +199,13 @@ impl App {
         }
         let desired = self.desired_polls();
         self.poller.sync(&desired, self.now);
+        // A deployment state that is no longer polled goes stale: forget it, so the
+        // next visit waits for a fresh answer instead of trusting an old one.
+        let on_dashboard = matches!(self.screen, Screen::Dashboard);
+        let poller = &self.poller;
+        self.dashboard.latest_deployments.retain(|service_id, _| {
+            on_dashboard && poller.is_active(&Request::LatestDeployment(*service_id))
+        });
         for request in self.poller.take_due(self.now) {
             effects.push(self.fetch_effect(request));
         }

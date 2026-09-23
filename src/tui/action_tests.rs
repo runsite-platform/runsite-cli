@@ -102,6 +102,19 @@ fn a_freshly_opened_service_waits_for_the_deployment_check() {
 }
 
 #[test]
+fn a_service_selected_again_waits_for_a_fresh_deployment_check() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('j'));
+    update(&mut app, char_key('k'));
+    update(&mut app, char_key('D'));
+    assert!(app.overlay.is_none());
+    assert!(app
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.text.contains("checking for a deployment in progress")));
+}
+
+#[test]
 fn restart_asks_first_and_y_sends_exactly_one_request() {
     let mut app = dashboard_on_resources();
     let effects = update(&mut app, char_key('R'));
