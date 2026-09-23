@@ -5,6 +5,7 @@ mod login;
 mod poller;
 mod status;
 mod theme;
+mod views;
 mod worker;
 
 #[cfg(test)]

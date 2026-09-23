@@ -1,0 +1,28 @@
+---
+source: src/tui/views/snapshot_tests.rs
+expression: screen
+---
+" █▀▄ █▀▀  RunSite CLI vxxxxx                                                    "
+" █▀▄ ▄▄█  profile: default                                                      "
+"          https://api.runsite.app                                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"        ┌ Log in · profile: default ───────────────────────────────────┐        "
+"        │Email + password    API key                                   │        "
+"        │                                                              │        "
+"        │Email     ada@example.com▏                                    │        "
+"        │Password                                                      │        "
+"        │                                                              │        "
+"        │                                                              │        "
+"        │                                                              │        "
+"        │                                                              │        "
+"        │                                                              │        "
+"        │                                                              │        "
+"        └──────────────────────────────────────────────────────────────┘        "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" ctrl+←/→ tab · tab next field · enter log in · ctrl+c quit                     "

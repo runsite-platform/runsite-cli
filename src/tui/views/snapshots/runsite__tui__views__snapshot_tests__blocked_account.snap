@@ -1,0 +1,28 @@
+---
+source: src/tui/views/snapshot_tests.rs
+expression: screen
+---
+" █▀▄ █▀▀  RunSite CLI vxxxxx                                                    "
+" █▀▄ ▄▄█  ada@example.com · profile: default                                    "
+"          https://api.runsite.app                                               "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                             Your account is blocked                            "
+"                                 unpaid invoice                                 "
+"                                                                                "
+"                                 Press q to quit                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+" q quit                                                          updated 3s ago "

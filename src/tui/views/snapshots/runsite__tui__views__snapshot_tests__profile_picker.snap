@@ -1,0 +1,28 @@
+---
+source: src/tui/views/snapshot_tests.rs
+expression: screen
+---
+" █▀▄ █▀▀  RunSite CLI vxxxxx                                                    "
+" █▀▄ ▄▄█  ada@example.com · profile: default                                    "
+"          https://api.runsite.app                                               "
+"┌ Projects ────────────────────────────────────────────────────────────────────┐"
+"│▸ landing                                                                    4│"
+"│  blog                                                                       1│"
+"│  Unassigned                                                                 1│"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│       ┌ Profiles ────────────────────────────────────────────────────┐       │"
+"│       │▸ default          https://api.runsite.app (current)          │       │"
+"│       │  staging          https://staging.runsite.app (no key)       │       │"
+"│       └──────────────────────────────────────────────────────────────┘       │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" enter switch · esc close · q quit                               updated 3s ago "
