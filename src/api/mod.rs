@@ -1,4 +1,5 @@
 mod login;
+mod resources;
 mod types;
 pub use login::Credentials;
 pub use types::*;
@@ -126,6 +127,11 @@ impl ApiClient {
             .profiles
             .get(&self.profile_name)
             .and_then(|p| p.current_project_id.clone())
+    }
+
+    /// True when `RUNSITE_API_TOKEN` overrides the profile's saved key.
+    pub fn uses_env_token(&self) -> bool {
+        std::env::var("RUNSITE_API_TOKEN").is_ok()
     }
 
     fn auth_token(&self) -> Option<String> {

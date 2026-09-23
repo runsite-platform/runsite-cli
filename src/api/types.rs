@@ -234,6 +234,94 @@ pub struct BulkEnvVars {
     pub variables: Vec<BulkEnvVarItem>,
 }
 
+// Views used by the interactive TUI. They are kept apart from the types above
+// so that the `--output json` shape of existing commands never changes.
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+/// `active_workspace_name` is not read: the API leaves it null for API keys.
+pub struct CurrentUser {
+    pub id: Uuid,
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ApiKeyIdentity {
+    pub id: Uuid,
+    pub name: String,
+    pub scope: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
+pub struct ServiceSummary {
+    #[serde(default)]
+    pub web_services: i64,
+    #[serde(default)]
+    pub postgresql: i64,
+    #[serde(default)]
+    pub redis: i64,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ProjectSummary {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub service_summary: ServiceSummary,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectSummaryList {
+    pub projects: Vec<ProjectSummary>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ServiceInfo {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub url: Option<String>,
+    pub project_id: Option<Uuid>,
+    pub project_type: Option<String>,
+    pub source_type: Option<String>,
+    pub image_ref: Option<String>,
+    pub github_branch: Option<String>,
+    pub min_instances: Option<i32>,
+    pub max_instances: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceInfoList {
+    pub web_services: Vec<ServiceInfo>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct PostgresInProject {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub postgres_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct RedisInProject {
+    pub id: Uuid,
+    pub name: String,
+    pub status: String,
+    pub redis_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ProjectDetail {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub web_services_list: Vec<ServiceInfo>,
+    #[serde(default)]
+    pub databases_list: Vec<PostgresInProject>,
+    #[serde(default)]
+    pub redis_list: Vec<RedisInProject>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
