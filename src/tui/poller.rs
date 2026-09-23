@@ -179,7 +179,9 @@ mod tests {
 
     #[test]
     fn failures_back_off_up_to_thirty_seconds_and_reset_on_success() {
-        let delays: Vec<i64> = (1..=6).map(|n| backoff_delay(n).num_seconds()).collect();
+        let delays: Vec<i64> = (1..=6)
+            .map(|failures| backoff_delay(failures).num_seconds())
+            .collect();
         assert_eq!(delays, vec![2, 4, 8, 16, 30, 30]);
 
         let mut poller = Poller::default();
