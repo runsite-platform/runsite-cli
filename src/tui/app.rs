@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const TOAST_SECONDS: i64 = 4;
+/// How long actions stay blocked after one was accepted: two fast polls, so
+/// the new status or deployment has been seen before the next action.
+const SETTLE_SECONDS: i64 = 6;
 pub const RATE_LIMIT_MESSAGE: &str = "Rate limit reached, try again in a minute";
 pub const INVALID_KEY_NOTICE: &str = "Your API key is invalid or revoked";
 
@@ -49,6 +52,13 @@ pub enum Overlay {
     Confirm(Confirm),
 }
 
+/// A remote action that was sent: further actions wait for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingAction {
+    InFlight,
+    Settling { until: DateTime<Utc> },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
     pub text: String,
@@ -80,6 +90,7 @@ pub struct App {
     pub last_error: Option<String>,
     /// Project picked by the user per profile, saved to the config on exit.
     pub chosen_projects: BTreeMap<String, Uuid>,
+    pub pending_action: Option<PendingAction>,
     pub exit: Option<ExitReason>,
 }
 
@@ -109,6 +120,7 @@ impl App {
             last_refresh: None,
             last_error: None,
             chosen_projects: BTreeMap::new(),
+            pending_action: None,
             exit: None,
         }
     }
@@ -216,6 +228,10 @@ impl App {
         match action {
             Action::Tick { now } => {
                 self.now = now;
+                if matches!(self.pending_action, Some(PendingAction::Settling { until }) if until <= now)
+                {
+                    self.pending_action = None;
+                }
                 if self
                     .toast
                     .as_ref()
@@ -257,8 +273,12 @@ impl App {
                 result,
             } => {
                 if generation != self.generation {
+                    self.pending_action = None;
                     return Vec::new();
                 }
+                self.pending_action = result.is_ok().then_some(PendingAction::Settling {
+                    until: self.now + TimeDelta::seconds(SETTLE_SECONDS),
+                });
                 match result {
                     Ok(()) => {
                         self.show_toast(mutation.accepted_message(), Tone::Good);

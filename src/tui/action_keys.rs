@@ -6,7 +6,7 @@ use super::actions::{
     database_mutation, rollback_mutation, service_mutation, ServiceKey, Unavailable,
     CHECKING_DEPLOYMENT_REASON,
 };
-use super::app::{App, Overlay, Screen};
+use super::app::{App, Overlay, PendingAction, Screen};
 use super::dashboard::{Pane, Resource};
 use super::detail::{short_ref, DetailTab};
 use super::status::deployment_in_progress;
@@ -73,6 +73,17 @@ impl App {
     /// What an action key would do on the current screen. `None` when the
     /// key means nothing here, `Err` when it is disabled.
     pub fn resolve_action(&self, key: char) -> Option<Result<Confirm, Unavailable>> {
+        let resolved = self.resolve_action_on_screen(key)?;
+        if let (Ok(confirm), Some(_)) = (&resolved, self.pending_action) {
+            return Some(Err(Unavailable {
+                action: confirm.verb,
+                reason: "waiting for the previous action".to_string(),
+            }));
+        }
+        Some(resolved)
+    }
+
+    fn resolve_action_on_screen(&self, key: char) -> Option<Result<Confirm, Unavailable>> {
         let scope = self.session.key_scope.as_deref();
         match &self.screen {
             // Only the focused pane's selection is a target: in the one-pane
@@ -182,10 +193,13 @@ impl App {
                 let mutation = confirm.mutation;
                 self.overlay = None;
                 match self.resolve_action(mutation.key()) {
-                    Some(Ok(current)) if current.mutation == mutation => vec![Effect::Mutate {
-                        generation: self.generation,
-                        mutation,
-                    }],
+                    Some(Ok(current)) if current.mutation == mutation => {
+                        self.pending_action = Some(PendingAction::InFlight);
+                        vec![Effect::Mutate {
+                            generation: self.generation,
+                            mutation,
+                        }]
+                    }
                     Some(Err(unavailable)) => {
                         self.show_toast(unavailable.message(), Tone::Bad);
                         Vec::new()

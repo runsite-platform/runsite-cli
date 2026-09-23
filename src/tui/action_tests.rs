@@ -140,6 +140,47 @@ fn y_sends_nothing_when_the_status_changed_under_the_modal() {
 }
 
 #[test]
+fn a_second_action_waits_until_the_first_one_has_taken_effect() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('R'));
+    update(&mut app, char_key('y'));
+
+    update(&mut app, char_key('R'));
+    assert!(app.overlay.is_none(), "blocked while the first is sent");
+
+    mutated(
+        &mut app,
+        Mutation::Restart {
+            service_id: API_SERVICE,
+        },
+        Ok(()),
+    );
+    update(&mut app, char_key('R'));
+    assert!(app.overlay.is_none(), "blocked right after it was accepted");
+
+    update(&mut app, Action::Tick { now: at(10) });
+    no_deployment_running(&mut app, API_SERVICE);
+    update(&mut app, char_key('R'));
+    assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
+}
+
+#[test]
+fn a_rejected_action_does_not_block_the_next_one() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('R'));
+    update(&mut app, char_key('y'));
+    mutated(
+        &mut app,
+        Mutation::Restart {
+            service_id: API_SERVICE,
+        },
+        Err(FetchError::RateLimited),
+    );
+    update(&mut app, char_key('R'));
+    assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
+}
+
+#[test]
 fn restart_asks_first_and_y_sends_exactly_one_request() {
     let mut app = dashboard_on_resources();
     let effects = update(&mut app, char_key('R'));
