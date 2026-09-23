@@ -170,6 +170,9 @@ impl App {
     }
 
     /// Only `y` sends the request; `n`, `Esc` and `Enter` cancel.
+    ///
+    /// Polls keep running under the modal, so the action is checked again on `y`:
+    /// it is sent only if it is still allowed and still the same request.
     pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let Some(Overlay::Confirm(confirm)) = &self.overlay else {
             return Vec::new();
@@ -178,10 +181,20 @@ impl App {
             KeyCode::Char('y') => {
                 let mutation = confirm.mutation;
                 self.overlay = None;
-                vec![Effect::Mutate {
-                    generation: self.generation,
-                    mutation,
-                }]
+                match self.resolve_action(mutation.key()) {
+                    Some(Ok(current)) if current.mutation == mutation => vec![Effect::Mutate {
+                        generation: self.generation,
+                        mutation,
+                    }],
+                    Some(Err(unavailable)) => {
+                        self.show_toast(unavailable.message(), Tone::Bad);
+                        Vec::new()
+                    }
+                    _ => {
+                        self.show_toast("The status changed, nothing was sent", Tone::Bad);
+                        Vec::new()
+                    }
+                }
             }
             KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
                 self.overlay = None;

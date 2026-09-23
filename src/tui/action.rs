@@ -56,6 +56,19 @@ pub enum Mutation {
 }
 
 impl Mutation {
+    /// The action key that asks for this mutation.
+    pub fn key(&self) -> char {
+        match self {
+            Mutation::Deploy { .. } => 'D',
+            Mutation::Restart { .. } => 'R',
+            Mutation::Rollback { .. } => 'B',
+            Mutation::StartService { .. }
+            | Mutation::StopService { .. }
+            | Mutation::StartDatabase { .. }
+            | Mutation::StopDatabase { .. } => 'S',
+        }
+    }
+
     /// Toast shown once the API accepted the request.
     pub fn accepted_message(&self) -> &'static str {
         match self {

@@ -115,6 +115,31 @@ fn a_service_selected_again_waits_for_a_fresh_deployment_check() {
 }
 
 #[test]
+fn y_sends_nothing_when_the_status_changed_under_the_modal() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('S'));
+    assert_eq!(confirm_prompt(&app), "Stop api?");
+
+    let mut stopped = landing_detail();
+    stopped.web_services_list[0].status = "stopped".to_string();
+    app.poller.refresh_all(app.now);
+    update(&mut app, Action::Tick { now: at(4) });
+    deliver(
+        &mut app,
+        Request::ProjectDetail(LANDING),
+        Payload::ProjectDetail(stopped),
+    );
+
+    let effects = update(&mut app, char_key('y'));
+    assert!(mutations(&effects).is_empty());
+    assert!(app.overlay.is_none());
+    assert_eq!(
+        app.toast.as_ref().map(|toast| toast.text.as_str()),
+        Some("The status changed, nothing was sent")
+    );
+}
+
+#[test]
 fn restart_asks_first_and_y_sends_exactly_one_request() {
     let mut app = dashboard_on_resources();
     let effects = update(&mut app, char_key('R'));
