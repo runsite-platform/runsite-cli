@@ -4,6 +4,7 @@ use super::{
     ProjectSummaryList, ResourceMetrics, ServiceInfo, ServiceInfoList,
 };
 use anyhow::Result;
+use serde_json::Value;
 use uuid::Uuid;
 
 impl ApiClient {
@@ -92,6 +93,37 @@ impl ApiClient {
             service_id, deployment_id
         ))
         .await
+    }
+
+    /// A real rebuild (`POST …/deployments`), limited to 5 per minute.
+    /// `POST …/deploy` only starts a stopped service.
+    pub async fn trigger_deployment(&self, service_id: Uuid) -> Result<()> {
+        self.post_empty::<Value>(&format!("/api/v1/web-services/{}/deployments", service_id))
+            .await
+            .map(|_| ())
+    }
+
+    /// `command` is `restart`, `start` or `stop`.
+    pub async fn service_command(&self, service_id: Uuid, command: &str) -> Result<()> {
+        self.post_empty::<Value>(&format!("/api/v1/web-services/{}/{}", service_id, command))
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn roll_back(&self, service_id: Uuid, deployment_id: Uuid) -> Result<()> {
+        self.post_empty::<Value>(&format!(
+            "/api/v1/web-services/{}/deployments/{}/rollback",
+            service_id, deployment_id
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// `command` is `start` or `stop`.
+    pub async fn database_command(&self, database_id: Uuid, command: &str) -> Result<()> {
+        self.post_empty::<Value>(&format!("/api/v1/databases/{}/{}", database_id, command))
+            .await
+            .map(|_| ())
     }
 
     pub async fn database(&self, database_id: Uuid) -> Result<DatabaseDetail> {
@@ -294,6 +326,99 @@ pub(crate) mod tests {
         assert_eq!(database.kind, "postgresql");
         assert_eq!(database.cpu_usage_percent, Some(7.5));
         assert_eq!(database.external_hostname, None);
+    }
+
+    async fn expect_post(server: &MockServer, route: &str, status: u16) {
+        Mock::given(method("POST"))
+            .and(path(route))
+            .and(header(
+                "authorization",
+                format!("Bearer {TEST_KEY}").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn deploy_posts_a_new_deployment_not_the_start_route() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}/deployments"),
+            201,
+        )
+        .await;
+        client_for(&server)
+            .trigger_deployment(service_id())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn service_commands_post_to_their_route() {
+        let server = MockServer::start().await;
+        for command in ["restart", "start", "stop"] {
+            expect_post(
+                &server,
+                &format!("/api/v1/web-services/{SERVICE_ID}/{command}"),
+                200,
+            )
+            .await;
+        }
+        let client = client_for(&server);
+        for command in ["restart", "start", "stop"] {
+            client.service_command(service_id(), command).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn rollback_posts_to_the_target_deployment() {
+        let server = MockServer::start().await;
+        expect_post(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}/deployments/{DEPLOYMENT_ID}/rollback"),
+            200,
+        )
+        .await;
+        client_for(&server)
+            .roll_back(service_id(), Uuid::parse_str(DEPLOYMENT_ID).unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn database_commands_post_to_their_route() {
+        let server = MockServer::start().await;
+        let database = "3f2a1b4c-0000-4000-8000-000000000004";
+        expect_post(&server, &format!("/api/v1/databases/{database}/stop"), 200).await;
+        client_for(&server)
+            .database_command(Uuid::parse_str(database).unwrap(), "stop")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_deploy_reports_429() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/api/v1/web-services/{SERVICE_ID}/deployments"
+            )))
+            .respond_with(ResponseTemplate::new(429).set_body_json(
+                serde_json::json!({"detail": "Too many requests. Please try again later."}),
+            ))
+            .mount(&server)
+            .await;
+        let error = client_for(&server)
+            .trigger_deployment(service_id())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::error::ApiError>(),
+            Some(crate::error::ApiError::Http { status: 429, .. })
+        ));
     }
 
     #[tokio::test]
