@@ -1,11 +1,13 @@
 //! Runs effects against the API in background tasks and reports back as actions.
 
 use super::action::{Action, FetchError, Payload, Request};
+use super::log_buffer::LogQuery;
 use crate::api::{ApiClient, Credentials};
 use crate::config::{self, Config};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
 
 pub struct Worker {
     client: ApiClient,
@@ -49,6 +51,23 @@ impl Worker {
         });
     }
 
+    pub fn fetch_logs(&self, generation: u64, service: Uuid, query: LogQuery) {
+        let client = self.client.clone();
+        let results = self.results.clone();
+        tokio::spawn(async move {
+            let result = client
+                .service_logs(service, query.tail, query.since)
+                .await
+                .map(|body| Payload::Logs { body, query })
+                .map_err(|error| FetchError::from_error(&error));
+            let _ = results.send(Action::Loaded {
+                generation,
+                request: Request::Logs(service),
+                result,
+            });
+        });
+    }
+
     /// On success the key is saved to this profile, on disk and in memory.
     pub fn log_in(&self, generation: u64, credentials: Credentials) {
         let client = self.client.clone();
@@ -71,6 +90,25 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
         Request::Projects => Payload::Projects(client.project_summaries().await?),
         Request::ProjectDetail(id) => Payload::ProjectDetail(client.project_detail(id).await?),
         Request::UnassignedServices => Payload::UnassignedServices(client.services().await?),
+        Request::Service(id) => Payload::Service(Box::new(client.service(id).await?)),
+        Request::LatestDeployment(id) => Payload::LatestDeployment(
+            client
+                .deployments(id, 1)
+                .await?
+                .into_iter()
+                .next()
+                .map(Box::new),
+        ),
+        Request::Metrics(id) => Payload::Metrics(client.service_metrics(id).await?),
+        Request::MetricsHistory(id) => {
+            Payload::MetricsHistory(client.service_metrics_history(id, 3600).await?)
+        }
+        Request::Deployments(id) => Payload::Deployments(client.deployments(id, 10).await?),
+        Request::Deployment(service, deployment) => {
+            Payload::Deployment(Box::new(client.deployment(service, deployment).await?))
+        }
+        Request::Database(id) => Payload::Database(Box::new(client.database(id).await?)),
+        Request::Logs(_) => bail!("log requests carry a query: use Worker::fetch_logs"),
     })
 }
 

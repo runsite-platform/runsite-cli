@@ -1,9 +1,11 @@
 mod blocked;
 mod dashboard;
+mod database_detail;
 mod header;
 mod help;
 mod login;
 mod profile_picker;
+mod service_detail;
 #[cfg(test)]
 mod snapshot_tests;
 mod status_bar;
@@ -41,6 +43,12 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
     header::render(frame, header_area, app, theme);
     match &app.screen {
         Screen::Dashboard => dashboard::render(frame, body_area, app, theme),
+        Screen::ServiceDetail(detail) => {
+            service_detail::render(frame, body_area, app, detail, theme)
+        }
+        Screen::DatabaseDetail(database) => {
+            database_detail::render(frame, body_area, app, database, theme)
+        }
         Screen::Login(login) => login::render(frame, body_area, app, login, theme),
         Screen::Blocked { reason } => blocked::render(frame, body_area, reason, theme),
     }

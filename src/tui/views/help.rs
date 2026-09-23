@@ -1,5 +1,6 @@
 use super::{centered, key_label, modal};
 use crate::tui::app::{App, Screen};
+use crate::tui::detail::DetailTab;
 use crate::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -19,10 +20,49 @@ pub fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("ctrl+c", "quit"),
         ],
         Screen::Blocked { .. } => vec![("q", "quit")],
+        Screen::ServiceDetail(ref detail) => {
+            let mut entries = vec![
+                ("1 2 3 / tab", "switch tab"),
+                ("esc", "back"),
+                ("r", "refresh now"),
+            ];
+            if detail.deployment_view.is_some() {
+                entries.extend([
+                    ("j k / pgup pgdn", "scroll build logs"),
+                    ("g / G", "top / bottom"),
+                ]);
+            } else if detail.tab == DetailTab::Logs {
+                entries.extend([
+                    ("j k / pgup pgdn", "scroll"),
+                    ("g / G", "top / bottom and follow"),
+                    ("f", "toggle follow"),
+                    ("w", "toggle wrap"),
+                    ("← →", "scroll sideways (wrap off)"),
+                    ("/ n N", "search, next, previous"),
+                    ("c", "clear the view"),
+                ]);
+            } else if detail.tab == DetailTab::Deploys {
+                entries.extend([("j k", "move"), ("enter", "deployment details")]);
+            }
+            entries.extend([
+                ("P", "switch profile"),
+                ("?", "this help"),
+                ("q / ctrl+c", "quit"),
+            ]);
+            entries
+        }
+        Screen::DatabaseDetail(_) => vec![
+            ("esc", "back"),
+            ("r", "refresh now"),
+            ("P", "switch profile"),
+            ("?", "this help"),
+            ("q / ctrl+c", "quit"),
+        ],
         Screen::Dashboard => vec![
             ("↑↓ / j k", "move"),
             ("tab / ←→ / h l", "switch pane"),
-            ("enter", "select the project"),
+            ("enter", "open"),
+            ("1 2 3", "open a service on a tab"),
             ("esc", "back to projects"),
             ("/", "filter the focused list"),
             ("r", "refresh now"),

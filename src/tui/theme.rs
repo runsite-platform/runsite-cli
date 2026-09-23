@@ -164,6 +164,14 @@ impl Theme {
         }
     }
 
+    pub fn empty_value(&self) -> &'static str {
+        if self.ascii {
+            "-"
+        } else {
+            "—"
+        }
+    }
+
     pub fn ellipsis(&self) -> &'static str {
         if self.ascii {
             "..."

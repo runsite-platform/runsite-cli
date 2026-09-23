@@ -1,8 +1,9 @@
 use super::action::{Action, Effect, FetchError, Payload, ProfileEntry, Request};
-use super::dashboard::{DashboardState, Pane, ProjectChoice};
+use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
+use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
 use super::login::{LoginState, LoginTab};
 use super::poller::{Cadence, Poller};
-use super::status::Tone;
+use super::status::{database_look, deployment_in_progress, Tone};
 use crate::api::CurrentUser;
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -27,6 +28,8 @@ pub struct Session {
 #[derive(Debug)]
 pub enum Screen {
     Dashboard,
+    ServiceDetail(Box<ServiceDetailState>),
+    DatabaseDetail(DatabaseDetailState),
     Login(LoginState),
     Blocked { reason: String },
 }
@@ -127,12 +130,34 @@ impl App {
     }
 
     fn desired_polls(&self) -> Vec<(Request, Cadence)> {
-        if !matches!(self.screen, Screen::Dashboard) {
-            return Vec::new();
+        let mut polls = match self.screen {
+            Screen::Login(_) | Screen::Blocked { .. } => return Vec::new(),
+            _ => vec![
+                (Request::CurrentUser, Cadence::Once),
+                (Request::KeyScope, Cadence::Once),
+            ],
+        };
+        match &self.screen {
+            Screen::Dashboard => polls.extend(self.dashboard_polls()),
+            Screen::ServiceDetail(detail) => polls.extend(service_polls(detail)),
+            Screen::DatabaseDetail(database) => {
+                let transitional = database
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| database_look(&detail.status).transitional);
+                let interval = if transitional { 1 } else { 5 };
+                polls.push((
+                    Request::Database(database.database_id),
+                    Cadence::seconds(interval),
+                ));
+            }
+            Screen::Login(_) | Screen::Blocked { .. } => {}
         }
+        polls
+    }
+
+    fn dashboard_polls(&self) -> Vec<(Request, Cadence)> {
         let mut polls = vec![
-            (Request::CurrentUser, Cadence::Once),
-            (Request::KeyScope, Cadence::Once),
             (Request::Projects, Cadence::seconds(30)),
             // Needed on every dashboard view: the Unassigned row only exists
             // when this list has services without a project.
@@ -147,6 +172,20 @@ impl App {
         polls
     }
 
+    fn fetch_effect(&mut self, request: Request) -> Effect {
+        match (request, &mut self.screen) {
+            (Request::Logs(service), Screen::ServiceDetail(detail)) => Effect::FetchLogs {
+                generation: self.generation,
+                service,
+                query: detail.logs.start_fetch(),
+            },
+            _ => Effect::Fetch {
+                generation: self.generation,
+                request,
+            },
+        }
+    }
+
     fn schedule_fetches(&mut self, mut effects: Vec<Effect>) -> Vec<Effect> {
         if effects.iter().any(|effect| matches!(effect, Effect::Exit)) {
             return effects;
@@ -154,10 +193,7 @@ impl App {
         let desired = self.desired_polls();
         self.poller.sync(&desired, self.now);
         for request in self.poller.take_due(self.now) {
-            effects.push(Effect::Fetch {
-                generation: self.generation,
-                request,
-            });
+            effects.push(self.fetch_effect(request));
         }
         effects
     }
@@ -236,6 +272,17 @@ impl App {
                 );
                 self.dashboard.normalize_selection();
             }
+            Payload::Database(detail) => {
+                if let Screen::DatabaseDetail(database) = &mut self.screen {
+                    database.detail = Some(*detail);
+                }
+            }
+            payload => {
+                let now = self.now;
+                if let Screen::ServiceDetail(detail) = &mut self.screen {
+                    apply_service_payload(detail, payload, now);
+                }
+            }
         }
     }
 
@@ -268,6 +315,16 @@ impl App {
                 self.poller.record_failure(request, self.now, false);
                 self.handle_not_found(request);
             }
+            FetchError::Rejected {
+                status: 400,
+                message,
+            } if matches!(request, Request::Logs(_)) => {
+                // "Unable to fetch logs…" is a state of the service, not an error.
+                self.poller.record_failure(request, self.now, false);
+                if let Screen::ServiceDetail(detail) = &mut self.screen {
+                    detail.logs.status_message = Some(message);
+                }
+            }
             FetchError::Forbidden { message } | FetchError::Rejected { message, .. } => {
                 self.poller.record_failure(request, self.now, false);
                 self.last_error = Some(message.clone());
@@ -278,14 +335,38 @@ impl App {
     }
 
     fn handle_not_found(&mut self, request: Request) {
-        if let Request::ProjectDetail(id) = request {
-            // Drop it from the list too, so it is not polled again.
-            self.dashboard.details.remove(&id);
-            if let Some(projects) = &mut self.dashboard.projects {
-                projects.retain(|project| project.id != id);
+        match (request, &mut self.screen) {
+            (Request::ProjectDetail(id), _) => {
+                // Drop it from the list too, so it is not polled again.
+                self.dashboard.details.remove(&id);
+                if let Some(projects) = &mut self.dashboard.projects {
+                    projects.retain(|project| project.id != id);
+                }
+                self.dashboard.normalize_selection();
+                self.show_toast("No longer exists", Tone::Bad);
             }
-            self.dashboard.normalize_selection();
-            self.show_toast("No longer exists", Tone::Bad);
+            (Request::Deployment(..), Screen::ServiceDetail(detail))
+                if detail.deployment_view.is_some() =>
+            {
+                detail.deployment_view = None;
+                self.show_toast("No longer exists", Tone::Bad);
+            }
+            (
+                Request::Service(_)
+                | Request::LatestDeployment(_)
+                | Request::Metrics(_)
+                | Request::MetricsHistory(_)
+                | Request::Logs(_)
+                | Request::Deployments(_),
+                Screen::ServiceDetail(_),
+            )
+            | (Request::Database(_), Screen::DatabaseDetail(_)) => {
+                // A modal about the vanished resource must not survive it.
+                self.overlay = None;
+                self.screen = Screen::Dashboard;
+                self.show_toast("No longer exists", Tone::Bad);
+            }
+            _ => {}
         }
     }
 
@@ -367,6 +448,28 @@ impl App {
                     }
                 }
             }
+            Screen::ServiceDetail(ref detail) => {
+                if detail.logs.editing_search {
+                    self.handle_search_key(key);
+                    return Vec::new();
+                }
+                match self.handle_global_key(key) {
+                    Some(effects) => effects,
+                    None => {
+                        self.handle_service_key(key);
+                        Vec::new()
+                    }
+                }
+            }
+            Screen::DatabaseDetail(_) => match self.handle_global_key(key) {
+                Some(effects) => effects,
+                None => {
+                    if key.code == KeyCode::Esc {
+                        self.screen = Screen::Dashboard;
+                    }
+                    Vec::new()
+                }
+            },
         }
     }
 
@@ -540,10 +643,59 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => self.move_cursor(focus, -1),
             KeyCode::Down | KeyCode::Char('j') => self.move_cursor(focus, 1),
             KeyCode::Enter if focus == Pane::Projects => self.dashboard.focus = Pane::Resources,
+            KeyCode::Enter => self.open_selected_resource(DetailTab::Overview),
             KeyCode::Esc if focus == Pane::Resources => self.dashboard.focus = Pane::Projects,
             KeyCode::Char('/') => self.dashboard.editing_filter = Some(focus),
+            KeyCode::Char(digit @ '1'..='3') if focus == Pane::Resources => {
+                if let (Some(tab), Some(Resource::Service(_))) = (
+                    DetailTab::from_digit(digit),
+                    self.dashboard.selected_resource(),
+                ) {
+                    self.open_selected_resource(tab);
+                }
+            }
             _ => {}
         }
+    }
+
+    fn open_selected_resource(&mut self, tab: DetailTab) {
+        let Some(resource) = self.dashboard.selected_resource() else {
+            return;
+        };
+        let (database_id, name, status, version) = match resource {
+            Resource::Service(service) if service.status == "pending_deletion" => {
+                // Every service endpoint answers 404 for these.
+                self.show_toast("Being deleted", Tone::Bad);
+                return;
+            }
+            Resource::Service(service) => {
+                self.screen =
+                    Screen::ServiceDetail(Box::new(ServiceDetailState::new(service, tab)));
+                return;
+            }
+            Resource::Postgres(database) => (
+                database.id,
+                database.name,
+                database.status,
+                database.postgres_version,
+            ),
+            Resource::Redis(database) => (
+                database.id,
+                database.name,
+                database.status,
+                database.redis_version,
+            ),
+        };
+        if status == "pending_deletion" {
+            self.show_toast("Being deleted", Tone::Bad);
+            return;
+        }
+        self.screen = Screen::DatabaseDetail(DatabaseDetailState {
+            database_id,
+            name,
+            version,
+            detail: None,
+        });
     }
 
     fn move_cursor(&mut self, pane: Pane, delta: isize) {
@@ -557,6 +709,78 @@ impl App {
             }
             Pane::Resources => self.dashboard.move_resource(delta),
         }
+    }
+}
+
+fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
+    let id = detail.service_id;
+    let fast = if detail.transitional() { 1 } else { 3 };
+    let mut polls = vec![
+        (Request::Service(id), Cadence::seconds(fast)),
+        (Request::LatestDeployment(id), Cadence::seconds(fast)),
+    ];
+    let deployments_interval = if detail.deployment_in_progress() {
+        3
+    } else {
+        10
+    };
+    match detail.tab {
+        DetailTab::Overview => polls.extend([
+            (Request::Metrics(id), Cadence::seconds(5)),
+            (Request::MetricsHistory(id), Cadence::seconds(60)),
+            (
+                Request::Deployments(id),
+                Cadence::seconds(deployments_interval),
+            ),
+        ]),
+        DetailTab::Logs => polls.push((Request::Logs(id), Cadence::seconds(2))),
+        DetailTab::Deploys => polls.push((
+            Request::Deployments(id),
+            Cadence::seconds(deployments_interval),
+        )),
+    }
+    if let Some(view) = &detail.deployment_view {
+        let cadence = match &view.detail {
+            Some(deployment) if !deployment_in_progress(&deployment.status) => Cadence::Once,
+            _ => Cadence::seconds(3),
+        };
+        polls.push((Request::Deployment(id, view.id), cadence));
+    }
+    polls
+}
+
+fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now: DateTime<Utc>) {
+    match payload {
+        Payload::Service(service) if service.id == detail.service_id => {
+            detail.name = service.name.clone();
+            detail.service = Some(*service);
+        }
+        Payload::LatestDeployment(deployment) => {
+            detail.latest_deployment = deployment.map(|deployment| *deployment)
+        }
+        Payload::Metrics(metrics) => detail.metrics = Some(metrics),
+        Payload::MetricsHistory(points) => detail.history = points,
+        Payload::Logs { body, query } => {
+            // Only the reply this buffer is waiting for: an answer to a request
+            // from before the screen was reopened would scramble the order.
+            if detail.logs.finish_fetch(query) {
+                detail.logs.ingest(&body, query, now);
+            }
+        }
+        Payload::Deployments(deployments) => {
+            detail.deploy_cursor = detail
+                .deploy_cursor
+                .min(deployments.len().saturating_sub(1));
+            detail.deployments = Some(deployments);
+        }
+        Payload::Deployment(deployment) => {
+            if let Some(view) = &mut detail.deployment_view {
+                if view.id == deployment.id {
+                    view.detail = Some(*deployment);
+                }
+            }
+        }
+        _ => {}
     }
 }
 

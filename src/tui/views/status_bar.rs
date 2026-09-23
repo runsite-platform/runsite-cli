@@ -1,6 +1,7 @@
 use super::{format_age, key_label, truncate};
 use crate::tui::app::{App, Overlay, Screen};
 use crate::tui::dashboard::Pane;
+use crate::tui::detail::DetailTab;
 use crate::tui::status::Tone;
 use crate::tui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -29,13 +30,37 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("ctrl+c", "quit"),
         ],
         (None, Screen::Blocked { .. }) => vec![("q", "quit")],
+        (None, Screen::DatabaseDetail(_)) => vec![("esc", "back"), ("?", "help"), ("q", "quit")],
+        (None, Screen::ServiceDetail(detail)) if detail.logs.editing_search => {
+            vec![("enter", "search"), ("esc", "clear / close")]
+        }
+        (None, Screen::ServiceDetail(detail)) if detail.deployment_view.is_some() => {
+            vec![("j/k", "scroll"), ("g/G", "top/bottom"), ("esc", "back")]
+        }
+        (None, Screen::ServiceDetail(detail)) => match detail.tab {
+            DetailTab::Overview => vec![
+                ("1-3", "tabs"),
+                ("esc", "back"),
+                ("?", "help"),
+                ("q", "quit"),
+            ],
+            DetailTab::Logs => vec![
+                ("/", "search"),
+                ("f", "follow"),
+                ("w", "wrap"),
+                ("c", "clear"),
+                ("esc", "back"),
+                ("?", "help"),
+            ],
+            DetailTab::Deploys => vec![("enter", "details"), ("esc", "back"), ("?", "help")],
+        },
         (None, Screen::Dashboard) if app.dashboard.editing_filter.is_some() => {
             vec![("enter", "apply"), ("esc", "clear / close")]
         }
         (None, Screen::Dashboard) => {
             let enter = match app.dashboard.focus {
                 Pane::Projects => ("enter", "select"),
-                Pane::Resources => ("esc", "back"),
+                Pane::Resources => ("enter", "open"),
             };
             vec![
                 enter,

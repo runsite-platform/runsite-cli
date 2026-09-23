@@ -1,5 +1,7 @@
+use super::log_buffer::LogQuery;
 use crate::api::{
-    ApiKeyIdentity, Credentials, CurrentUser, ProjectDetail, ProjectSummary, ServiceInfo,
+    ApiKeyIdentity, Credentials, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint,
+    ProjectDetail, ProjectSummary, ResourceMetrics, ServiceInfo,
 };
 use crate::error::ApiError;
 use chrono::{DateTime, Utc};
@@ -14,6 +16,16 @@ pub enum Request {
     Projects,
     ProjectDetail(Uuid),
     UnassignedServices,
+    Service(Uuid),
+    /// `deployments?limit=1`, polled fast to notice a deploy in progress.
+    LatestDeployment(Uuid),
+    Metrics(Uuid),
+    MetricsHistory(Uuid),
+    Logs(Uuid),
+    Deployments(Uuid),
+    /// Service id, deployment id.
+    Deployment(Uuid, Uuid),
+    Database(Uuid),
 }
 
 #[derive(Debug)]
@@ -23,6 +35,14 @@ pub enum Payload {
     Projects(Vec<ProjectSummary>),
     ProjectDetail(ProjectDetail),
     UnassignedServices(Vec<ServiceInfo>),
+    Service(Box<ServiceInfo>),
+    LatestDeployment(Option<Box<DeploymentInfo>>),
+    Metrics(ResourceMetrics),
+    MetricsHistory(Vec<MetricsPoint>),
+    Logs { body: String, query: LogQuery },
+    Deployments(Vec<DeploymentInfo>),
+    Deployment(Box<DeploymentInfo>),
+    Database(Box<DatabaseDetail>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,6 +174,12 @@ pub enum Effect {
     Fetch {
         generation: u64,
         request: Request,
+    },
+    /// Logs need the query built from the buffer's cursor.
+    FetchLogs {
+        generation: u64,
+        service: Uuid,
+        query: LogQuery,
     },
     LogIn {
         generation: u64,

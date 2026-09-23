@@ -187,6 +187,10 @@ impl DashboardState {
         resources
     }
 
+    pub fn selected_resource(&self) -> Option<Resource> {
+        self.resources().into_iter().nth(self.resource_cursor)
+    }
+
     /// True while the selected project's resources have never been loaded.
     pub fn resources_loading(&self) -> bool {
         match self.selected_project {

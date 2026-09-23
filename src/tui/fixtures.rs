@@ -3,8 +3,8 @@
 use super::action::{Action, Effect, FetchError, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
-    CurrentUser, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
-    ServiceSummary,
+    CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint, PostgresInProject, ProjectDetail,
+    ProjectSummary, RedisInProject, ResourceMetrics, ServiceInfo, ServiceSummary,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -176,5 +176,75 @@ pub fn loaded_dashboard() -> App {
         Payload::ProjectDetail(landing_detail()),
     );
     app.now = at(3);
+    app
+}
+
+pub const DEPLOYMENT_LIVE: Uuid = Uuid::from_u128(0x3f2a9c1d_0000_4000_8000_000000000011);
+pub const DEPLOYMENT_OLD: Uuid = Uuid::from_u128(0x7b3e0f2a_0000_4000_8000_000000000012);
+pub const DEPLOYMENT_NEW: Uuid = Uuid::from_u128(0x4b1c2d3e_0000_4000_8000_000000000013);
+
+pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> DeploymentInfo {
+    DeploymentInfo {
+        id,
+        status: status.to_string(),
+        branch: Some("main".to_string()),
+        commit_sha: Some(sha.to_string()),
+        commit_message: Some(format!("change {sha}")),
+        image_ref: None,
+        is_live,
+        build_logs: Some(
+            "Step 1/3 : FROM node:22\nStep 2/3 : RUN npm ci\nStep 3/3 : CMD npm start".to_string(),
+        ),
+        error_message: None,
+        created_at: Some(at(-7200)),
+    }
+}
+
+pub fn deployments() -> Vec<DeploymentInfo> {
+    vec![
+        deployment(DEPLOYMENT_LIVE, "running", true, "3f2a9c1d"),
+        deployment(DEPLOYMENT_OLD, "running", false, "7b3e0f2a"),
+    ]
+}
+
+pub fn metrics() -> ResourceMetrics {
+    ResourceMetrics {
+        cpu_usage_percent: 12.5,
+        memory_usage_bytes: 256 * 1024 * 1024,
+        memory_limit_bytes: 512 * 1024 * 1024,
+        memory_usage_percent: 50.0,
+        instance_count: 2,
+    }
+}
+
+pub fn history() -> Vec<MetricsPoint> {
+    (0..12)
+        .map(|minute| MetricsPoint {
+            timestamp: at(minute * 60),
+            cpu_usage_percent: (minute * 8) as f64,
+            memory_usage_percent: 50.0,
+        })
+        .collect()
+}
+
+pub fn postgres_detail() -> DatabaseDetail {
+    DatabaseDetail {
+        id: POSTGRES,
+        kind: "postgresql".to_string(),
+        name: "pg-main".to_string(),
+        status: "running".to_string(),
+        plan_name: Some("Starter".to_string()),
+        internal_hostname: Some("pg-main.internal".to_string()),
+        external_hostname: None,
+        cpu_usage_percent: Some(7.5),
+        memory_usage_percent: Some(40.0),
+    }
+}
+
+/// The loaded dashboard with the `api` service opened on `tab_key` (`'1'`–`'3'`).
+pub fn service_detail(tab_key: char) -> App {
+    let mut app = loaded_dashboard();
+    super::app::update(&mut app, key(KeyCode::Tab));
+    super::app::update(&mut app, char_key(tab_key));
     app
 }

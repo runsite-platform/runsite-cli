@@ -1,6 +1,8 @@
 mod action;
 mod app;
 mod dashboard;
+mod detail;
+mod detail_keys;
 mod log_buffer;
 mod login;
 mod poller;
@@ -11,6 +13,8 @@ mod worker;
 
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod detail_tests;
 #[cfg(test)]
 mod fixtures;
 
@@ -76,6 +80,11 @@ impl Runtime {
                     generation,
                     request,
                 } => self.worker.fetch(generation, request),
+                Effect::FetchLogs {
+                    generation,
+                    service,
+                    query,
+                } => self.worker.fetch_logs(generation, service, query),
                 Effect::LogIn {
                     generation,
                     credentials,
