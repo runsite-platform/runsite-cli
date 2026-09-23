@@ -10,8 +10,8 @@ mod ws;
 use anyhow::Result;
 use clap::Parser;
 use cli::{
-    Cli, Commands, ContextCommands, DbCommands, DeploymentCommands, EnvCommands, ProjectCommands,
-    ServiceCommands,
+    Cli, Commands, ContextCommands, DbCommands, DeploymentCommands, EnvCommands, OutputFormat,
+    ProjectCommands, ServiceCommands,
 };
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +41,15 @@ async fn main() {
 use colored::Colorize;
 
 async fn run(cli: Cli) -> Result<()> {
+    // Decided before the config is read, so a broken config never changes
+    // what a bare `runsite` does outside a terminal.
+    if cli.command.is_none() && (!tui::is_interactive() || matches!(cli.output, OutputFormat::Json))
+    {
+        use clap::CommandFactory;
+        eprint!("{}", Cli::command().render_help());
+        std::process::exit(2);
+    }
+
     let profile_override = cli.profile.as_deref();
     let (cfg, profile_name) = config::load(profile_override)?;
     let config = Arc::new(Mutex::new(cfg));
@@ -57,7 +66,18 @@ async fn run(cli: Cli) -> Result<()> {
     let client = api::ApiClient::new(base_url.clone(), config.clone(), profile_name.clone());
     let format = cli.output;
 
-    match cli.command {
+    let Some(command) = cli.command else {
+        return tui::run(config, profile_name).await;
+    };
+
+    match command {
+        Commands::Ui => {
+            if !tui::is_interactive() {
+                anyhow::bail!("`runsite ui` needs an interactive terminal");
+            }
+            tui::run(config, profile_name).await?;
+        }
+
         Commands::Login { token } => {
             commands::auth::login(config, &profile_name, &base_url, token.as_deref()).await?;
         }
