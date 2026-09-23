@@ -1,4 +1,6 @@
+mod login;
 mod types;
+pub use login::Credentials;
 pub use types::*;
 
 use crate::config::Config;
