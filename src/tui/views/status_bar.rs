@@ -133,17 +133,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             let insert_at = 1.min(all.len());
             all.splice(insert_at..insert_at, actions);
 
+            // Hints that do not fit are dropped whole, keeping a gap before the freshness text.
+            let available = usize::from(left.width).saturating_sub(1);
             let mut spans = vec![Span::raw(" ")];
+            let mut used = 1;
             for (index, (key, meaning, enabled)) in all.into_iter().enumerate() {
+                let mut entry = Vec::new();
                 if index > 0 {
-                    spans.push(Span::styled(theme.separator(), theme.muted()));
+                    entry.push(Span::styled(theme.separator(), theme.muted()));
                 }
                 if enabled {
-                    spans.push(Span::styled(key_label(key, theme), theme.accent()));
-                    spans.push(Span::raw(format!(" {meaning}")));
+                    entry.push(Span::styled(key_label(key, theme), theme.accent()));
+                    entry.push(Span::raw(format!(" {meaning}")));
                 } else {
-                    spans.push(Span::styled(format!("{key} {meaning}"), theme.muted()));
+                    entry.push(Span::styled(format!("{key} {meaning}"), theme.muted()));
                 }
+                let entry_width: usize = entry.iter().map(Span::width).sum();
+                if used + entry_width > available {
+                    break;
+                }
+                used += entry_width;
+                spans.extend(entry);
             }
             Line::from(spans)
         }
