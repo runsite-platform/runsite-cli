@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, Project, ProjectList};
+use crate::api::{ApiClient, Project, ProjectCreate, ProjectList};
 use crate::cli::OutputFormat;
 use crate::config::{self, Config};
 use crate::output::{print_table, render};
@@ -30,6 +30,23 @@ pub async fn list(client: &ApiClient, format: OutputFormat) -> Result<()> {
     let data: ProjectList = client.get("/api/v1/projects").await?;
     render(format, &data.projects, || {
         print_table(data.projects.iter().map(ProjectRow::from).collect())
+    })
+}
+
+pub async fn create(
+    client: &ApiClient,
+    name: &str,
+    description: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
+    let body = ProjectCreate {
+        name: name.to_string(),
+        description,
+    };
+    let project: Project = client.post("/api/v1/projects", &body).await?;
+    render(format, &project, || {
+        println!("Created project {} ({})", project.name, project.id);
+        println!("Select it with: runsite project use {}", project.id);
     })
 }
 

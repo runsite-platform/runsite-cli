@@ -9,7 +9,7 @@ mod ws;
 use anyhow::Result;
 use clap::Parser;
 use cli::{
-    Cli, Commands, ContextCommands, DeploymentCommands, EnvCommands, ProjectCommands,
+    Cli, Commands, ContextCommands, DbCommands, DeploymentCommands, EnvCommands, ProjectCommands,
     ServiceCommands,
 };
 use std::sync::{Arc, Mutex};
@@ -131,11 +131,50 @@ async fn run(cli: Cli) -> Result<()> {
 
         Commands::Project(sub) => match sub {
             ProjectCommands::List => commands::project::list(&client, format).await?,
+            ProjectCommands::Create { name, description } => {
+                commands::project::create(&client, &name, description, format).await?
+            }
             ProjectCommands::Use { project } => {
                 commands::project::use_project(&client, config, &profile_name, &project).await?
             }
             ProjectCommands::Unset => commands::project::unset_project(config, &profile_name)?,
         },
+
+        Commands::Db(sub) => match sub {
+            DbCommands::List => commands::database::list(&client, format).await?,
+            DbCommands::Create {
+                name,
+                plan,
+                engine,
+                project,
+            } => {
+                commands::database::create(
+                    &client,
+                    &name,
+                    &plan,
+                    engine,
+                    project.as_deref(),
+                    format,
+                )
+                .await?
+            }
+            DbCommands::Start { database } => {
+                commands::database::change_state(&client, &database, "start", format).await?
+            }
+            DbCommands::Stop { database } => {
+                commands::database::change_state(&client, &database, "stop", format).await?
+            }
+            DbCommands::Delete { database, yes } => {
+                commands::database::delete(&client, &database, yes).await?
+            }
+            DbCommands::Connect { database, service } => {
+                commands::database::connect(&client, &database, service.as_deref(), format).await?
+            }
+        },
+
+        Commands::Plans { service_type } => {
+            commands::database::plans(&client, service_type, format).await?
+        }
 
         Commands::Context(sub) => match sub {
             ContextCommands::Show => {

@@ -26,6 +26,76 @@ pub struct ProjectList {
     pub projects: Vec<Project>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ProjectCreate {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+// Plans
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServicePlan {
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub monthly_price_cents: i64,
+    pub cpu_limit: Option<f64>,
+    pub memory_limit_mb: Option<i64>,
+    pub storage_limit_gb: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServicePlanList {
+    pub plans: Vec<ServicePlan>,
+}
+
+// Managed databases (Postgres and Valkey). The public API never returns credentials.
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ManagedDatabase {
+    pub id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub plan_name: Option<String>,
+    pub storage_limit_gb: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ManagedDatabaseList {
+    pub databases: Vec<ManagedDatabase>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DatabaseStatus {
+    pub id: Uuid,
+    pub kind: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DatabaseCreate {
+    pub name: String,
+    pub plan_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionCreate {
+    pub target_type: String,
+    pub target_id: Uuid,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Connection {
+    pub id: Uuid,
+    pub target_type: String,
+    pub env_var_key: String,
+}
+
 // Web Services
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -220,6 +290,33 @@ mod tests {
 
         let json: serde_json::Value = serde_json::to_value(&body).unwrap();
         assert_eq!(json["variables"][0]["id"], id.to_string());
+    }
+
+    #[test]
+    fn database_create_omits_an_absent_project() {
+        let body = DatabaseCreate {
+            name: "main".to_string(),
+            plan_id: Uuid::parse_str("8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b").unwrap(),
+            project_id: None,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&body).unwrap();
+        assert!(json.get("project_id").is_none());
+    }
+
+    #[test]
+    fn database_list_reads_both_engines() {
+        let json = r#"{
+            "databases": [
+                {"id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b", "kind": "valkey", "name": "cache",
+                 "status": "running", "plan_name": null, "storage_limit_gb": 0,
+                 "created_at": "2026-01-01T00:00:00Z"}
+            ],
+            "total": 1
+        }"#;
+
+        let parsed: ManagedDatabaseList = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.databases[0].kind, "valkey");
     }
 
     #[test]

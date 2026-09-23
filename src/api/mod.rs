@@ -207,12 +207,7 @@ impl ApiClient {
         if resp.status().is_success() {
             Ok(())
         } else {
-            let status = resp.status().as_u16();
-            Err(ApiError::Http {
-                status,
-                message: resp.status().to_string(),
-            }
-            .into())
+            self.handle_response::<Value>(resp).await.map(|_| ())
         }
     }
 

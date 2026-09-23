@@ -94,6 +94,17 @@ pub enum Commands {
     #[command(subcommand)]
     Project(ProjectCommands),
 
+    /// Manage Postgres and Redis databases
+    #[command(subcommand)]
+    Db(DbCommands),
+
+    /// List plans with monthly prices
+    Plans {
+        /// Service type
+        #[arg(value_enum)]
+        service_type: PlanServiceType,
+    },
+
     /// Show or update CLI context
     #[command(subcommand)]
     Context(ContextCommands),
@@ -273,10 +284,89 @@ pub enum EnvCommands {
     },
 }
 
+#[derive(ValueEnum, Clone, Copy)]
+pub enum DbEngine {
+    Postgres,
+    Redis,
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+pub enum PlanServiceType {
+    Web,
+    Postgres,
+    Redis,
+}
+
+#[derive(Subcommand)]
+pub enum DbCommands {
+    /// List Postgres and Redis databases
+    List,
+
+    /// Create a database (billed from your balance)
+    Create {
+        /// Database name
+        name: String,
+
+        /// Plan slug or ID (see `runsite plans postgres` / `runsite plans redis`)
+        #[arg(long)]
+        plan: String,
+
+        /// Database engine
+        #[arg(long, value_enum, default_value = "postgres")]
+        engine: DbEngine,
+
+        /// Project name or ID; defaults to the project selected with `runsite project use`
+        #[arg(long)]
+        project: Option<String>,
+    },
+
+    /// Start a stopped database
+    Start {
+        /// Database name or ID
+        database: String,
+    },
+
+    /// Stop a running database (data is kept)
+    Stop {
+        /// Database name or ID
+        database: String,
+    },
+
+    /// Delete a database and all its data (needs an admin API key)
+    Delete {
+        /// Database name or ID
+        database: String,
+
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Inject DATABASE_URL or REDIS_URL into a service of the same project
+    Connect {
+        /// Database name or ID
+        database: String,
+
+        /// Service name or ID
+        #[arg(long)]
+        service: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum ProjectCommands {
     /// List all projects
     List,
+
+    /// Create a project
+    Create {
+        /// Project name
+        name: String,
+
+        /// Project description
+        #[arg(long)]
+        description: Option<String>,
+    },
 
     /// Set the current project context
     Use {

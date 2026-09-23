@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod context;
+pub mod database;
 pub mod deploy;
 pub mod deployments;
 pub mod env;
