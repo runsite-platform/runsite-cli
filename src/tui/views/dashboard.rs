@@ -119,7 +119,7 @@ fn render_projects(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
             Line::from(vec![
                 Span::raw(pointer(selected, theme)),
                 Span::styled(
-                    format!("{:<name_width$}", truncate(&row.name, name_width, theme)),
+                    format!("{:<name_width$}", truncate(row.name, name_width, theme)),
                     name_style,
                 ),
                 Span::styled(

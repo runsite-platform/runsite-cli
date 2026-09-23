@@ -19,21 +19,22 @@ pub enum ProjectChoice {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ProjectRow {
+pub struct ProjectRow<'a> {
     pub choice: ProjectChoice,
-    pub name: String,
+    pub name: &'a str,
     pub resource_count: i64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Resource {
-    Service(ServiceInfo),
-    Postgres(PostgresInProject),
-    Redis(RedisInProject),
+/// A row of the Resources pane, borrowed from the loaded project data.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Resource<'a> {
+    Service(&'a ServiceInfo),
+    Postgres(&'a PostgresInProject),
+    Redis(&'a RedisInProject),
 }
 
-impl Resource {
-    pub fn name(&self) -> &str {
+impl<'a> Resource<'a> {
+    pub fn name(&self) -> &'a str {
         match self {
             Resource::Service(service) => &service.name,
             Resource::Postgres(database) => &database.name,
@@ -60,8 +61,9 @@ pub struct DashboardState {
     pub latest_deployments: HashMap<Uuid, Option<DeploymentInfo>>,
 }
 
+/// Case-insensitive substring match; `filter` is already lowercase.
 fn matches_filter(name: &str, filter: &str) -> bool {
-    filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
+    filter.is_empty() || name.to_lowercase().contains(filter)
 }
 
 impl DashboardState {
@@ -72,38 +74,34 @@ impl DashboardState {
         }
     }
 
-    pub fn project_rows(&self) -> Vec<ProjectRow> {
-        let mut rows: Vec<ProjectRow> = self
-            .projects
-            .iter()
-            .flatten()
-            .map(|project| {
-                let summary = &project.service_summary;
-                ProjectRow {
-                    choice: ProjectChoice::Project(project.id),
-                    name: project.name.clone(),
-                    resource_count: summary.web_services + summary.postgresql + summary.redis,
-                }
-            })
-            .collect();
-
+    fn project_row_iter(&self) -> impl Iterator<Item = ProjectRow<'_>> {
+        let filter = self.project_filter.to_lowercase();
         let unassigned_count = self.unassigned.as_ref().map_or(0, Vec::len);
-        if unassigned_count > 0 {
-            rows.push(ProjectRow {
-                choice: ProjectChoice::Unassigned,
-                name: "Unassigned".to_string(),
-                resource_count: unassigned_count as i64,
-            });
-        }
+        let projects = self.projects.iter().flatten().map(|project| {
+            let summary = &project.service_summary;
+            ProjectRow {
+                choice: ProjectChoice::Project(project.id),
+                name: &project.name,
+                resource_count: summary.web_services + summary.postgresql + summary.redis,
+            }
+        });
+        let unassigned = (unassigned_count > 0).then_some(ProjectRow {
+            choice: ProjectChoice::Unassigned,
+            name: "Unassigned",
+            resource_count: unassigned_count as i64,
+        });
+        projects
+            .chain(unassigned)
+            .filter(move |row| matches_filter(row.name, &filter))
+    }
 
-        rows.retain(|row| matches_filter(&row.name, &self.project_filter));
-        rows
+    pub fn project_rows(&self) -> Vec<ProjectRow<'_>> {
+        self.project_row_iter().collect()
     }
 
     pub fn selected_row_index(&self) -> Option<usize> {
         let selected = self.selected_project?;
-        self.project_rows()
-            .iter()
+        self.project_row_iter()
             .position(|row| row.choice == selected)
     }
 
@@ -113,35 +111,32 @@ impl DashboardState {
         if self.projects.is_none() {
             return;
         }
-        let rows = self.project_rows();
-        let still_visible = self
-            .selected_project
-            .is_some_and(|selected| rows.iter().any(|row| row.choice == selected));
-        if !still_visible {
-            self.selected_project = rows.first().map(|row| row.choice);
+        if self.selected_row_index().is_none() {
+            let first = self.project_row_iter().next().map(|row| row.choice);
+            self.selected_project = first;
             self.resource_cursor = 0;
         }
-        let resource_count = self.resources().len();
+        let resource_count = self.resource_iter().count();
         if self.resource_cursor >= resource_count {
             self.resource_cursor = resource_count.saturating_sub(1);
         }
     }
 
     pub fn move_project(&mut self, delta: isize) {
-        let rows = self.project_rows();
-        if rows.is_empty() {
+        let choices: Vec<ProjectChoice> = self.project_row_iter().map(|row| row.choice).collect();
+        if choices.is_empty() {
             return;
         }
         let current = self.selected_row_index().unwrap_or(0);
-        let next = current.saturating_add_signed(delta).min(rows.len() - 1);
-        if rows[next].choice != rows[current].choice || self.selected_project.is_none() {
+        let next = current.saturating_add_signed(delta).min(choices.len() - 1);
+        if choices[next] != choices[current] || self.selected_project.is_none() {
             self.resource_cursor = 0;
         }
-        self.selected_project = Some(rows[next].choice);
+        self.selected_project = Some(choices[next]);
     }
 
     pub fn move_resource(&mut self, delta: isize) {
-        let count = self.resources().len();
+        let count = self.resource_iter().count();
         if count == 0 {
             return;
         }
@@ -151,49 +146,48 @@ impl DashboardState {
             .min(count - 1);
     }
 
-    pub fn selected_project_name(&self) -> Option<String> {
+    pub fn selected_project_name(&self) -> Option<&str> {
         let selected = self.selected_project?;
-        self.project_rows()
-            .into_iter()
+        self.project_row_iter()
             .find(|row| row.choice == selected)
             .map(|row| row.name)
     }
 
     /// Web services, then Postgres, then Redis/Valkey.
-    pub fn resources(&self) -> Vec<Resource> {
-        let mut resources: Vec<Resource> = match self.selected_project {
+    fn resource_iter(&self) -> impl Iterator<Item = Resource<'_>> {
+        let filter = self.resource_filter.to_lowercase();
+        let (services, databases, redis): (
+            &[ServiceInfo],
+            &[PostgresInProject],
+            &[RedisInProject],
+        ) = match self.selected_project {
             Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
-                Some(detail) => detail
-                    .web_services_list
-                    .iter()
-                    .cloned()
-                    .map(Resource::Service)
-                    .chain(
-                        detail
-                            .databases_list
-                            .iter()
-                            .cloned()
-                            .map(Resource::Postgres),
-                    )
-                    .chain(detail.redis_list.iter().cloned().map(Resource::Redis))
-                    .collect(),
-                None => Vec::new(),
+                Some(detail) => (
+                    &detail.web_services_list,
+                    &detail.databases_list,
+                    &detail.redis_list,
+                ),
+                None => (&[], &[], &[]),
             },
-            Some(ProjectChoice::Unassigned) => self
-                .unassigned
-                .iter()
-                .flatten()
-                .cloned()
-                .map(Resource::Service)
-                .collect(),
-            None => Vec::new(),
+            Some(ProjectChoice::Unassigned) => {
+                (self.unassigned.as_deref().unwrap_or_default(), &[], &[])
+            }
+            None => (&[], &[], &[]),
         };
-        resources.retain(|resource| matches_filter(resource.name(), &self.resource_filter));
-        resources
+        services
+            .iter()
+            .map(Resource::Service)
+            .chain(databases.iter().map(Resource::Postgres))
+            .chain(redis.iter().map(Resource::Redis))
+            .filter(move |resource| matches_filter(resource.name(), &filter))
     }
 
-    pub fn selected_resource(&self) -> Option<Resource> {
-        self.resources().into_iter().nth(self.resource_cursor)
+    pub fn resources(&self) -> Vec<Resource<'_>> {
+        self.resource_iter().collect()
+    }
+
+    pub fn selected_resource(&self) -> Option<Resource<'_>> {
+        self.resource_iter().nth(self.resource_cursor)
     }
 
     /// True while the selected project's resources have never been loaded.

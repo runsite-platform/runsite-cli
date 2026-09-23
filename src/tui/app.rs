@@ -786,20 +786,20 @@ impl App {
             }
             Resource::Service(service) => {
                 self.screen =
-                    Screen::ServiceDetail(Box::new(ServiceDetailState::new(service, tab)));
+                    Screen::ServiceDetail(Box::new(ServiceDetailState::new(service.clone(), tab)));
                 return;
             }
             Resource::Postgres(database) => (
                 database.id,
-                database.name,
-                database.status,
-                database.postgres_version,
+                database.name.clone(),
+                database.status.clone(),
+                database.postgres_version.clone(),
             ),
             Resource::Redis(database) => (
                 database.id,
-                database.name,
-                database.status,
-                database.redis_version,
+                database.name.clone(),
+                database.status.clone(),
+                database.redis_version.clone(),
             ),
         };
         if status == "pending_deletion" {

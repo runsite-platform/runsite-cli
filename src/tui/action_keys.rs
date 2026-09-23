@@ -99,7 +99,7 @@ impl App {
                             .is_some_and(|deployment| deployment_in_progress(&deployment.status))
                     });
                     let mutation =
-                        service_mutation(service_key, &service, deployment_running, scope);
+                        service_mutation(service_key, service, deployment_running, scope);
                     // Scope and status reasons win; then wait for the first poll.
                     if mutation.is_ok() && latest.is_none() && service_key != ServiceKey::StartStop
                     {
@@ -108,7 +108,7 @@ impl App {
                             reason: CHECKING_DEPLOYMENT_REASON.to_string(),
                         }));
                     }
-                    Some(mutation.map(|mutation| service_confirm(mutation, &service)))
+                    Some(mutation.map(|mutation| service_confirm(mutation, service)))
                 }
                 Resource::Postgres(database) if key == 'S' => Some(
                     database_mutation(database.id, &database.status, scope)
