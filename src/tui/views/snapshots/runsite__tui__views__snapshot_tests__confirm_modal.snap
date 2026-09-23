@@ -1,0 +1,28 @@
+---
+source: src/tui/views/snapshot_tests.rs
+expression: screen
+---
+" █▀▄ █▀▀  RunSite CLI vxxxxx                                                    "
+" █▀▄ ▄▄█  ada@example.com · profile: default                                    "
+"          https://api.runsite.app                                               "
+"┌ Resources · landing ─────────────────────────────────────────────────────────┐"
+"│▸ ● api                running      1–3                                       │"
+"│  ● web                running      1                                         │"
+"│  ○ worker             stopped      1                                         │"
+"│  ◆ pg-main            postgres 16  ●                                         │"
+"│  ◆ cache              valkey 7.2   ○                                         │"
+"│                                                                              │"
+"│         ┌ Confirm ─────────────────────────────────────────────────┐         │"
+"│         │ Restart api?                                             │         │"
+"│         │                                                          │         │"
+"│         │ y confirm · n / esc cancel                               │         │"
+"│         │                                                          │         │"
+"│         └──────────────────────────────────────────────────────────┘         │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" y confirm · n / esc cancel                                      updated 0s ago "

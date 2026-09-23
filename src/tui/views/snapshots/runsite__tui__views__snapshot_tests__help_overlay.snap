@@ -1,0 +1,28 @@
+---
+source: src/tui/views/snapshot_tests.rs
+expression: screen
+---
+" █▀▄ █▀▀  RunSite CLI vxxxxx                                                    "
+" █▀▄ ▄▄█  ada@example.com · profile: default                                    "
+"          https://api.runsite.app                                               "
+"┌ Projects ────────────────────────────────────────────────────────────────────┐"
+"│▸ landing                                                                    4│"
+"│  blog       ┌ Keys ────────────────────────────────────────────┐            1│"
+"│  Unassigned │ ↑↓ / j k        move                             │            1│"
+"│             │ tab / ←→ / h l  switch pane                      │             │"
+"│             │ enter           open                             │             │"
+"│             │ 1 2 3           open a service on a tab          │             │"
+"│             │ esc             back to projects                 │             │"
+"│             │ /               filter the focused list          │             │"
+"│             │ D R S           deploy, restart, start/stop      │             │"
+"│             │ r               refresh now                      │             │"
+"│             │ P               switch profile                   │             │"
+"│             │ ?               this help                        │             │"
+"│             │ q / ctrl+c      quit                             │             │"
+"│             │                                                  │             │"
+"│             │ any key closes this window                       │             │"
+"│             └──────────────────────────────────────────────────┘             │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" any key close                                                   updated 3s ago "
