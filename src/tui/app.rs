@@ -484,6 +484,19 @@ impl App {
                 self.session.user = None;
                 self.session.key_scope = None;
                 self.poller.clear();
+                self.pending_action = None;
+                // The key may belong to another account: drop everything loaded
+                // with the old one, but keep the project the user was looking at.
+                let current_project = match self.dashboard.selected_project {
+                    Some(ProjectChoice::Project(id)) => Some(id),
+                    _ => None,
+                };
+                let preferred = self
+                    .chosen_projects
+                    .get(&self.session.profile)
+                    .copied()
+                    .or(current_project);
+                self.dashboard = DashboardState::new(preferred);
                 self.screen = Screen::Dashboard;
             }
             Err(FetchError::Blocked { reason }) => {

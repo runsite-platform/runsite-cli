@@ -473,6 +473,32 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
 }
 
 #[test]
+fn a_new_login_drops_what_the_old_key_loaded() {
+    let mut app = loaded_dashboard();
+    fail(
+        &mut app,
+        Request::Projects,
+        FetchError::Unauthorized {
+            message: "Invalid API key".to_string(),
+        },
+    );
+    let generation = app.generation;
+    update(
+        &mut app,
+        Action::LoggedIn {
+            generation,
+            result: Ok("grace@example.com".to_string()),
+        },
+    );
+    assert!(app.dashboard.projects.is_none());
+    assert!(app.dashboard.details.is_empty());
+    assert_eq!(
+        app.dashboard.selected_project,
+        Some(ProjectChoice::Project(LANDING))
+    );
+}
+
+#[test]
 fn a_blocked_account_at_login_gets_the_blocked_screen() {
     let mut app = super::app::App::new(session(false), None, at(0), (120, 40));
     update(
