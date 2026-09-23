@@ -45,6 +45,14 @@ pub fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
                 entries.extend([("j k", "move"), ("enter", "deployment details")]);
             }
             entries.extend([
+                ("D", "deploy (rebuild)"),
+                ("R", "restart"),
+                ("S", "start / stop"),
+            ]);
+            if detail.deployment_view.is_some() || detail.tab == DetailTab::Deploys {
+                entries.push(("B", "roll back to this deployment"));
+            }
+            entries.extend([
                 ("P", "switch profile"),
                 ("?", "this help"),
                 ("q / ctrl+c", "quit"),
@@ -52,6 +60,7 @@ pub fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             entries
         }
         Screen::DatabaseDetail(_) => vec![
+            ("S", "start / stop"),
             ("esc", "back"),
             ("r", "refresh now"),
             ("P", "switch profile"),
@@ -65,6 +74,7 @@ pub fn help_entries(app: &App) -> Vec<(&'static str, &'static str)> {
             ("1 2 3", "open a service on a tab"),
             ("esc", "back to projects"),
             ("/", "filter the focused list"),
+            ("D R S", "deploy, restart, start/stop"),
             ("r", "refresh now"),
             ("P", "switch profile"),
             ("?", "this help"),
