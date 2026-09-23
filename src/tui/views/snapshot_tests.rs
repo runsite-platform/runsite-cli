@@ -232,3 +232,198 @@ fn blocked_account() {
     assert!(screen.contains("unpaid invoice"));
     assert_snapshot!(screen);
 }
+
+fn loaded_service_detail(tab_key: char) -> App {
+    let mut app = service_detail(tab_key);
+    let mut api = service(API_SERVICE, "api", "running", Some(LANDING));
+    api.max_instances = Some(3);
+    deliver(
+        &mut app,
+        Request::Service(API_SERVICE),
+        Payload::Service(Box::new(api)),
+    );
+    deliver(
+        &mut app,
+        Request::LatestDeployment(API_SERVICE),
+        Payload::LatestDeployment(deployments().into_iter().next().map(Box::new)),
+    );
+    deliver(
+        &mut app,
+        Request::Deployments(API_SERVICE),
+        Payload::Deployments(deployments()),
+    );
+    app
+}
+
+#[test]
+fn service_overview() {
+    let mut app = loaded_service_detail('1');
+    deliver(
+        &mut app,
+        Request::Metrics(API_SERVICE),
+        Payload::Metrics(metrics()),
+    );
+    deliver(
+        &mut app,
+        Request::MetricsHistory(API_SERVICE),
+        Payload::MetricsHistory(history()),
+    );
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("https://api-x.runsite.app"));
+    assert!(screen.contains("1–3 (live 2)"));
+    assert!(screen.contains("12.5%"));
+    assert!(screen.contains("256 MB / 512 MB"));
+    assert!(screen.contains("3f2a9c1 change 3f2a9c1d"));
+    assert_snapshot!(screen);
+    assert_snapshot!(
+        "service_overview_small",
+        render_text(&app, &unicode(), 80, 24)
+    );
+}
+
+#[test]
+fn a_stopped_service_shows_no_metrics() {
+    let mut app = loaded_service_detail('1');
+    deliver(
+        &mut app,
+        Request::Service(API_SERVICE),
+        Payload::Service(Box::new(service(
+            API_SERVICE,
+            "api",
+            "stopped",
+            Some(LANDING),
+        ))),
+    );
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("CPU        —"));
+    assert!(!screen.contains("(live"));
+}
+
+#[test]
+fn service_logs() {
+    let mut app = loaded_service_detail('2');
+    deliver(
+        &mut app,
+        Request::Logs(API_SERVICE),
+        Payload::Logs {
+            body:
+                "2026-09-23T10:00:01.5Z GET /health 200\n2026-09-23T10:00:02Z GET /api/users 500\n"
+                    .to_string(),
+            query: crate::tui::log_buffer::LogQuery {
+                tail: 500,
+                since: None,
+            },
+        },
+    );
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("Showing logs from the newest instance"));
+    assert!(screen.contains("10:00:02 GET /api/users 500"));
+    assert_snapshot!(screen);
+    assert_snapshot!("service_logs_small", render_text(&app, &unicode(), 80, 24));
+}
+
+#[test]
+fn service_logs_waiting_message() {
+    let mut app = loaded_service_detail('2');
+    deliver(
+        &mut app,
+        Request::Logs(API_SERVICE),
+        Payload::Logs {
+            body: "Service is not ready yet. Try again shortly.".to_string(),
+            query: crate::tui::log_buffer::LogQuery {
+                tail: 500,
+                since: None,
+            },
+        },
+    );
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("Service is not ready yet."));
+}
+
+#[test]
+fn service_deploys() {
+    let app = loaded_service_detail('3');
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("live"));
+    assert!(screen.contains("ready"));
+    assert!(screen.contains("7b3e0f2"));
+    assert_snapshot!(screen);
+    assert_snapshot!(
+        "service_deploys_small",
+        render_text(&app, &unicode(), 80, 24)
+    );
+}
+
+#[test]
+fn deployment_detail() {
+    let mut app = loaded_service_detail('3');
+    update(&mut app, key(ratatui::crossterm::event::KeyCode::Enter));
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("Deployment 3f2a9c1"));
+    assert!(screen.contains("Step 2/3 : RUN npm ci"));
+    assert_snapshot!(screen);
+}
+
+#[test]
+fn database_detail() {
+    let mut app = loaded_dashboard();
+    update(&mut app, key(ratatui::crossterm::event::KeyCode::Tab));
+    for _ in 0..3 {
+        update(&mut app, char_key('j'));
+    }
+    update(&mut app, key(ratatui::crossterm::event::KeyCode::Enter));
+    deliver(
+        &mut app,
+        Request::Database(POSTGRES),
+        Payload::Database(Box::new(postgres_detail())),
+    );
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("postgresql"));
+    assert!(screen.contains("pg-main.internal"));
+    assert!(screen.contains("7.5%"));
+    assert_snapshot!(screen);
+}
+
+#[test]
+fn jumping_to_the_top_of_the_logs_shows_the_first_lines() {
+    let mut app = loaded_service_detail('2');
+    let body: String = (0..60)
+        .map(|index| format!("2026-09-23T10:00:{:02}Z line {index}\n", index % 60))
+        .collect();
+    deliver(
+        &mut app,
+        Request::Logs(API_SERVICE),
+        Payload::Logs {
+            body,
+            query: crate::tui::log_buffer::LogQuery {
+                tail: 500,
+                since: None,
+            },
+        },
+    );
+    update(&mut app, char_key('g'));
+    let screen = render_text(&app, &unicode(), 80, 24);
+    assert!(screen.contains("line 0 "), "{screen}");
+}
+
+#[test]
+fn a_log_message_stays_visible_above_existing_lines() {
+    let mut app = loaded_service_detail('2');
+    deliver(
+        &mut app,
+        Request::Logs(API_SERVICE),
+        Payload::Logs {
+            body: "2026-09-23T10:00:01Z hello\n".to_string(),
+            query: crate::tui::log_buffer::LogQuery {
+                tail: 500,
+                since: None,
+            },
+        },
+    );
+    if let crate::tui::app::Screen::ServiceDetail(detail) = &mut app.screen {
+        detail.logs.status_message = Some("Service is not ready yet".to_string());
+    }
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("Service is not ready yet"));
+    assert!(screen.contains("hello"));
+}
