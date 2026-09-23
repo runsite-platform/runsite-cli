@@ -18,10 +18,15 @@ pub fn belongs_to_project(service: &WebService, project_id: Option<&str>) -> boo
     }
 }
 
-/// Error `detail` is a plain string, or for 422 a list of `{loc, msg}` entries.
+/// Error `detail` is a plain string, a `{code, ...}` object, or for 422 a list
+/// of `{loc, msg}` entries.
 fn describe_error_detail(detail: &Value) -> Option<String> {
     if let Some(text) = detail.as_str() {
         return Some(text.to_string());
+    }
+
+    if detail.is_object() {
+        return describe_structured_detail(detail);
     }
 
     let problems: Vec<String> = detail
@@ -41,6 +46,24 @@ fn describe_error_detail(detail: &Value) -> Option<String> {
         .collect();
 
     (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+fn describe_structured_detail(detail: &Value) -> Option<String> {
+    let field = |key: &str| detail.get(key).and_then(Value::as_str);
+    let message = match field("code")? {
+        "insufficient_scope" => format!(
+            "This action needs a `{}` key (yours: `{}`)",
+            field("required").unwrap_or("?"),
+            field("actual").unwrap_or("?")
+        ),
+        "user_blocked" => match field("reason").filter(|reason| !reason.is_empty()) {
+            Some(reason) => format!("Your account is blocked: {}", reason),
+            None => "Your account is blocked".to_string(),
+        },
+        "registration_review_required" => "Your account is awaiting review".to_string(),
+        other => other.to_string(),
+    };
+    Some(message)
 }
 
 fn match_id_prefix(ids: &[Uuid], prefix: &str) -> Result<Uuid> {
@@ -133,16 +156,20 @@ impl ApiClient {
                 .await
                 .context("failed to parse response")
         } else {
-            let message = response
+            let detail = response
                 .json::<Value>()
                 .await
                 .ok()
-                .and_then(|body| describe_error_detail(&body["detail"]))
-                .unwrap_or_else(|| status.to_string());
+                .map(|mut body| body["detail"].take())
+                .unwrap_or(Value::Null);
+            let message = describe_error_detail(&detail).unwrap_or_else(|| status.to_string());
+            let code = detail["code"].as_str().map(str::to_string);
 
             Err(ApiError::Http {
                 status: status.as_u16(),
                 message,
+                code,
+                detail: detail.is_object().then_some(detail),
             }
             .into())
         }
@@ -460,6 +487,46 @@ mod tests {
             describe_error_detail(&detail).as_deref(),
             Some("Web service not found")
         );
+    }
+
+    #[test]
+    fn an_insufficient_scope_detail_names_both_scopes() {
+        let detail = serde_json::json!({"code": "insufficient_scope", "required": "write", "actual": "read"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "This action needs a `write` key (yours: `read`)"
+        );
+    }
+
+    #[test]
+    fn a_blocked_user_detail_carries_the_reason() {
+        let detail = serde_json::json!({"code": "user_blocked", "reason": "unpaid invoice"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "Your account is blocked: unpaid invoice"
+        );
+        let without_reason = serde_json::json!({"code": "user_blocked", "reason": ""});
+        assert_eq!(
+            describe_error_detail(&without_reason).unwrap(),
+            "Your account is blocked"
+        );
+    }
+
+    #[test]
+    fn a_registration_review_detail_is_explained() {
+        let detail =
+            serde_json::json!({"code": "registration_review_required", "status": "pending"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "Your account is awaiting review"
+        );
+    }
+
+    #[test]
+    fn an_unknown_structured_detail_falls_back_to_its_code() {
+        let detail = serde_json::json!({"code": "quota_exceeded"});
+        assert_eq!(describe_error_detail(&detail).unwrap(), "quota_exceeded");
+        assert_eq!(describe_error_detail(&serde_json::json!({"x": 1})), None);
     }
 
     #[test]
