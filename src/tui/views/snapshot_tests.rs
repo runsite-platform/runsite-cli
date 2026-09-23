@@ -427,3 +427,28 @@ fn a_log_message_stays_visible_above_existing_lines() {
     assert!(screen.contains("Service is not ready yet"));
     assert!(screen.contains("hello"));
 }
+
+#[test]
+fn confirm_modal() {
+    let mut app = loaded_dashboard();
+    update(&mut app, key(ratatui::crossterm::event::KeyCode::Tab));
+    no_deployment_running(&mut app, API_SERVICE);
+    update(&mut app, char_key('R'));
+    let screen = render_text(&app, &unicode(), 80, 24);
+    assert!(screen.contains("Restart api?"));
+    assert!(screen.contains("y confirm"));
+    assert_snapshot!(screen);
+    assert_snapshot!("confirm_modal_wide", render_text(&app, &unicode(), 120, 40));
+}
+
+#[test]
+fn disabled_actions_stay_in_the_hint_bar() {
+    let mut app = loaded_dashboard();
+    update(&mut app, key(ratatui::crossterm::event::KeyCode::Tab));
+    update(&mut app, char_key('j'));
+    update(&mut app, char_key('j'));
+    let screen = render_text(&app, &unicode(), 120, 40);
+    assert!(screen.contains("D deploy"));
+    assert!(screen.contains("R restart"));
+    assert!(screen.contains("S start"));
+}

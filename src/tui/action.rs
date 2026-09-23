@@ -197,6 +197,11 @@ pub enum Action {
         generation: u64,
         result: Result<String, FetchError>,
     },
+    Mutated {
+        generation: u64,
+        mutation: Mutation,
+        result: Result<(), FetchError>,
+    },
     ProfilesListed(Vec<ProfileEntry>),
     /// SIGTERM, SIGHUP or the console window closing.
     Terminate,
@@ -224,6 +229,10 @@ pub enum Effect {
     LogIn {
         generation: u64,
         credentials: Credentials,
+    },
+    Mutate {
+        generation: u64,
+        mutation: Mutation,
     },
     ListProfiles,
     SwitchProfile {

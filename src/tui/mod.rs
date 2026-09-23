@@ -1,4 +1,5 @@
 mod action;
+mod action_keys;
 mod actions;
 mod app;
 mod dashboard;
@@ -12,6 +13,8 @@ mod theme;
 mod views;
 mod worker;
 
+#[cfg(test)]
+mod action_tests;
 #[cfg(test)]
 mod app_tests;
 #[cfg(test)]
@@ -90,6 +93,10 @@ impl Runtime {
                     generation,
                     credentials,
                 } => self.worker.log_in(generation, credentials),
+                Effect::Mutate {
+                    generation,
+                    mutation,
+                } => self.worker.mutate(generation, mutation),
                 Effect::ListProfiles => {
                     let entries = config::read_current()
                         .map(|config| profile_entries(&config))

@@ -41,4 +41,4 @@ expression: screen
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" 1-3 tabs · esc back · ? help · q quit                                                                   updated 0s ago "
+" 1-3 tabs · D deploy · R restart · S stop · esc back · ? help                                            updated 0s ago "

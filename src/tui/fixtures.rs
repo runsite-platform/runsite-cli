@@ -3,8 +3,8 @@
 use super::action::{Action, Effect, FetchError, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
-    CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint, PostgresInProject, ProjectDetail,
-    ProjectSummary, RedisInProject, ResourceMetrics, ServiceInfo, ServiceSummary,
+    ApiKeyIdentity, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint, PostgresInProject,
+    ProjectDetail, ProjectSummary, RedisInProject, ResourceMetrics, ServiceInfo, ServiceSummary,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -78,6 +78,23 @@ pub fn fail(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
         result: Err(error),
     };
     super::app::update(app, action)
+}
+
+pub fn write_key() -> ApiKeyIdentity {
+    ApiKeyIdentity {
+        id: Uuid::from_u128(9),
+        name: "cli-laptop".to_string(),
+        scope: "write".to_string(),
+    }
+}
+
+/// Answer the dashboard's latest-deployment poll for the selected service.
+pub fn no_deployment_running(app: &mut App, service_id: Uuid) {
+    deliver(
+        app,
+        Request::LatestDeployment(service_id),
+        Payload::LatestDeployment(None),
+    );
 }
 
 pub fn user() -> CurrentUser {
@@ -161,6 +178,7 @@ pub fn loaded_dashboard() -> App {
     app.start();
     let steps = [
         (Request::CurrentUser, Payload::CurrentUser(user())),
+        (Request::KeyScope, Payload::KeyScope(write_key())),
         (Request::Projects, Payload::Projects(projects())),
         (
             Request::UnassignedServices,

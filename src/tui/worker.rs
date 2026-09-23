@@ -1,6 +1,6 @@
 //! Runs effects against the API in background tasks and reports back as actions.
 
-use super::action::{Action, FetchError, Payload, Request};
+use super::action::{Action, FetchError, Mutation, Payload, Request};
 use super::log_buffer::LogQuery;
 use crate::api::{ApiClient, Credentials};
 use crate::config::{self, Config};
@@ -68,6 +68,22 @@ impl Worker {
         });
     }
 
+    /// Never retried: a failure is reported once and the user decides.
+    pub fn mutate(&self, generation: u64, mutation: Mutation) {
+        let client = self.client.clone();
+        let results = self.results.clone();
+        tokio::spawn(async move {
+            let result = send_mutation(&client, mutation)
+                .await
+                .map_err(|error| FetchError::from_error(&error));
+            let _ = results.send(Action::Mutated {
+                generation,
+                mutation,
+                result,
+            });
+        });
+    }
+
     /// On success the key is saved to this profile, on disk and in memory.
     pub fn log_in(&self, generation: u64, credentials: Credentials) {
         let client = self.client.clone();
@@ -110,6 +126,25 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
         Request::Database(id) => Payload::Database(Box::new(client.database(id).await?)),
         Request::Logs(_) => bail!("log requests carry a query: use Worker::fetch_logs"),
     })
+}
+
+async fn send_mutation(client: &ApiClient, mutation: Mutation) -> Result<()> {
+    match mutation {
+        Mutation::Deploy { service_id } => client.trigger_deployment(service_id).await,
+        Mutation::Restart { service_id } => client.service_command(service_id, "restart").await,
+        Mutation::StartService { service_id } => client.service_command(service_id, "start").await,
+        Mutation::StopService { service_id } => client.service_command(service_id, "stop").await,
+        Mutation::Rollback {
+            service_id,
+            deployment_id,
+        } => client.roll_back(service_id, deployment_id).await,
+        Mutation::StartDatabase { database_id } => {
+            client.database_command(database_id, "start").await
+        }
+        Mutation::StopDatabase { database_id } => {
+            client.database_command(database_id, "stop").await
+        }
+    }
 }
 
 async fn log_in_and_store(

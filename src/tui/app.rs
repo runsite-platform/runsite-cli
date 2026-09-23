@@ -1,4 +1,5 @@
-use super::action::{Action, Effect, FetchError, Payload, ProfileEntry, Request};
+use super::action::{Action, Effect, FetchError, Mutation, Payload, ProfileEntry, Request};
+use super::action_keys::Confirm;
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
 use super::login::{LoginState, LoginTab};
@@ -45,6 +46,7 @@ pub struct ProfilePicker {
 pub enum Overlay {
     Help,
     ProfilePicker(ProfilePicker),
+    Confirm(Confirm),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +171,11 @@ impl App {
         {
             polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
         }
+        if self.dashboard.focus == Pane::Resources {
+            if let Some(Resource::Service(service)) = self.dashboard.selected_resource() {
+                polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
+            }
+        }
         polls
     }
 
@@ -230,13 +237,30 @@ impl App {
                         self.poller.record_success(request, self.now);
                         self.last_refresh = Some(self.now);
                         self.last_error = None;
-                        self.apply_payload(payload);
+                        self.apply_payload(request, payload);
                         Vec::new()
                     }
                     Err(error) => self.handle_fetch_error(request, error),
                 }
             }
             Action::LoggedIn { generation, result } => self.handle_login_result(generation, result),
+            Action::Mutated {
+                generation,
+                mutation,
+                result,
+            } => {
+                if generation != self.generation {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(()) => {
+                        self.show_toast(mutation.accepted_message(), Tone::Good);
+                        self.poller.refresh_all(self.now);
+                        Vec::new()
+                    }
+                    Err(error) => self.handle_mutation_error(mutation, error),
+                }
+            }
             Action::ProfilesListed(entries) => {
                 if let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay {
                     picker.cursor = entries
@@ -251,8 +275,15 @@ impl App {
         }
     }
 
-    fn apply_payload(&mut self, payload: Payload) {
+    fn apply_payload(&mut self, request: Request, payload: Payload) {
         match payload {
+            Payload::LatestDeployment(deployment) if matches!(self.screen, Screen::Dashboard) => {
+                if let Request::LatestDeployment(service_id) = request {
+                    self.dashboard
+                        .latest_deployments
+                        .insert(service_id, deployment.map(|deployment| *deployment));
+                }
+            }
             Payload::CurrentUser(user) => self.session.user = Some(user),
             Payload::KeyScope(identity) => self.session.key_scope = Some(identity.scope),
             Payload::Projects(projects) => {
@@ -286,24 +317,61 @@ impl App {
         }
     }
 
-    fn handle_fetch_error(&mut self, request: Request, error: FetchError) -> Vec<Effect> {
+    /// 401 and a blocked account end the session whatever the request was.
+    fn end_session(&mut self, error: &FetchError) -> Option<Vec<Effect>> {
         match error {
             FetchError::Unauthorized { .. } => {
                 if self.session.env_token {
                     self.exit = Some(ExitReason::EnvTokenRejected);
-                    return vec![Effect::Exit];
+                    return Some(vec![Effect::Exit]);
                 }
                 self.generation += 1;
                 self.session.has_credentials = false;
                 self.overlay = None;
                 self.poller.clear();
                 self.screen = Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE));
+                Some(Vec::new())
             }
             FetchError::Blocked { reason } => {
                 self.overlay = None;
                 self.poller.clear();
-                self.screen = Screen::Blocked { reason };
+                self.screen = Screen::Blocked {
+                    reason: reason.clone(),
+                };
+                Some(Vec::new())
             }
+            _ => None,
+        }
+    }
+
+    fn handle_mutation_error(&mut self, mutation: Mutation, error: FetchError) -> Vec<Effect> {
+        if let Some(effects) = self.end_session(&error) {
+            return effects;
+        }
+        match error {
+            FetchError::RateLimited => self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad),
+            FetchError::NotFound { .. } => {
+                let target_gone = !matches!(mutation, Mutation::Rollback { .. });
+                if target_gone && !matches!(self.screen, Screen::Dashboard) {
+                    self.screen = Screen::Dashboard;
+                }
+                self.show_toast("No longer exists", Tone::Bad);
+            }
+            other => {
+                self.show_toast(other.message(), Tone::Bad);
+                self.poller.refresh_all(self.now);
+            }
+        }
+        Vec::new()
+    }
+
+    fn handle_fetch_error(&mut self, request: Request, error: FetchError) -> Vec<Effect> {
+        if let Some(effects) = self.end_session(&error) {
+            return effects;
+        }
+        match error {
+            // Already handled by `end_session`.
+            FetchError::Unauthorized { .. } | FetchError::Blocked { .. } => {}
             FetchError::RateLimited => {
                 self.poller.record_failure(request, self.now, true);
                 self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad);
@@ -440,36 +508,41 @@ impl App {
                     self.handle_filter_key(key);
                     return Vec::new();
                 }
-                match self.handle_global_key(key) {
-                    Some(effects) => effects,
-                    None => {
-                        self.handle_dashboard_key(key);
-                        Vec::new()
-                    }
+                if let Some(effects) = self
+                    .handle_global_key(key)
+                    .or_else(|| self.handle_action_key(key))
+                {
+                    return effects;
                 }
+                self.handle_dashboard_key(key);
+                Vec::new()
             }
             Screen::ServiceDetail(ref detail) => {
                 if detail.logs.editing_search {
                     self.handle_search_key(key);
                     return Vec::new();
                 }
-                match self.handle_global_key(key) {
-                    Some(effects) => effects,
-                    None => {
-                        self.handle_service_key(key);
-                        Vec::new()
-                    }
+                if let Some(effects) = self
+                    .handle_global_key(key)
+                    .or_else(|| self.handle_action_key(key))
+                {
+                    return effects;
                 }
+                self.handle_service_key(key);
+                Vec::new()
             }
-            Screen::DatabaseDetail(_) => match self.handle_global_key(key) {
-                Some(effects) => effects,
-                None => {
-                    if key.code == KeyCode::Esc {
-                        self.screen = Screen::Dashboard;
-                    }
-                    Vec::new()
+            Screen::DatabaseDetail(_) => {
+                if let Some(effects) = self
+                    .handle_global_key(key)
+                    .or_else(|| self.handle_action_key(key))
+                {
+                    return effects;
                 }
-            },
+                if key.code == KeyCode::Esc {
+                    self.screen = Screen::Dashboard;
+                }
+                Vec::new()
+            }
         }
     }
 
@@ -501,6 +574,9 @@ impl App {
     }
 
     fn handle_overlay_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        if matches!(self.overlay, Some(Overlay::Confirm(_))) {
+            return self.handle_confirm_key(key);
+        }
         let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay else {
             // Any key closes the help overlay.
             self.overlay = None;

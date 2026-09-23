@@ -1,6 +1,6 @@
 ---
 source: src/tui/views/snapshot_tests.rs
-expression: screen
+expression: "render_text(&app, &unicode(), 120, 40)"
 ---
 " █▀▄ █▀▀  RunSite CLI vxxxxx                                                                                            "
 " █▀▄ ▄▄█  ada@example.com · profile: default                                                                            "
@@ -20,12 +20,12 @@ expression: screen
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
-"│                              ││                                                                                      │"
+"│                             ┌ Confirm ─────────────────────────────────────────────────┐                             │"
+"│                             │ Restart api?                                             │                             │"
+"│                             │                                                          │                             │"
+"│                             │ y confirm · n / esc cancel                               │                             │"
+"│                             │                                                          │                             │"
+"│                             └──────────────────────────────────────────────────────────┘                             │"
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"
@@ -41,4 +41,4 @@ expression: screen
 "│                              ││                                                                                      │"
 "│                              ││                                                                                      │"
 "└──────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────────┘"
-" enter select · / filter · ? help · q quit                                                               updated 3s ago "
+" y confirm · n / esc cancel                                                                              updated 0s ago "

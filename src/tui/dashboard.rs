@@ -1,4 +1,6 @@
-use crate::api::{PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo};
+use crate::api::{
+    DeploymentInfo, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
+};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -53,6 +55,9 @@ pub struct DashboardState {
     pub resource_filter: String,
     /// The pane whose filter is being typed into, if any.
     pub editing_filter: Option<Pane>,
+    /// Newest deployment per service, polled for the selected service so that
+    /// `D` and `R` can be refused while a deployment is in progress.
+    pub latest_deployments: HashMap<Uuid, Option<DeploymentInfo>>,
 }
 
 fn matches_filter(name: &str, filter: &str) -> bool {

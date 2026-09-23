@@ -23,6 +23,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 ("q", "quit"),
             ]
         }
+        (Some(Overlay::Confirm(_)), _) => vec![("y", "confirm"), ("n / esc", "cancel")],
         (None, Screen::Login(_)) => vec![
             ("ctrl+←/→", "tab"),
             ("tab", "next field"),
@@ -38,12 +39,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             vec![("j/k", "scroll"), ("g/G", "top/bottom"), ("esc", "back")]
         }
         (None, Screen::ServiceDetail(detail)) => match detail.tab {
-            DetailTab::Overview => vec![
-                ("1-3", "tabs"),
-                ("esc", "back"),
-                ("?", "help"),
-                ("q", "quit"),
-            ],
+            DetailTab::Overview => vec![("1-3", "tabs"), ("esc", "back"), ("?", "help")],
             DetailTab::Logs => vec![
                 ("/", "search"),
                 ("f", "follow"),
@@ -62,15 +58,41 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
                 Pane::Projects => ("enter", "select"),
                 Pane::Resources => ("enter", "open"),
             };
-            vec![
-                enter,
-                ("/", "filter"),
-                ("P", "profile"),
-                ("?", "help"),
-                ("q", "quit"),
-            ]
+            vec![enter, ("/", "filter"), ("?", "help"), ("q", "quit")]
         }
     }
+}
+
+/// Action keys that apply here; disabled ones are drawn greyed out.
+fn action_hints(app: &App) -> Vec<(&'static str, &'static str, bool)> {
+    if app.overlay.is_some() {
+        return Vec::new();
+    }
+    let keys: &[char] = match &app.screen {
+        Screen::Dashboard if app.dashboard.editing_filter.is_none() => &['D', 'R', 'S'],
+        Screen::ServiceDetail(detail) if detail.deployment_view.is_some() => &['B'],
+        Screen::ServiceDetail(detail) => match detail.tab {
+            DetailTab::Overview => &['D', 'R', 'S'],
+            DetailTab::Deploys => &['B', 'D'],
+            DetailTab::Logs => &[],
+        },
+        Screen::DatabaseDetail(_) => &['S'],
+        _ => &[],
+    };
+    keys.iter()
+        .filter_map(|key| {
+            let resolved = app.resolve_action(*key)?;
+            let (label, meaning) = match (key, &resolved) {
+                ('D', _) => ("D", "deploy"),
+                ('R', _) => ("R", "restart"),
+                ('B', _) => ("B", "rollback"),
+                (_, Ok(confirm)) if confirm.verb == "Start" => ("S", "start"),
+                (_, Ok(_)) => ("S", "stop"),
+                (_, Err(_)) => ("S", "start/stop"),
+            };
+            Some((label, meaning, resolved.is_ok()))
+        })
+        .collect()
 }
 
 fn freshness(app: &App, theme: &Theme) -> Span<'static> {
@@ -103,13 +125,25 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let left_line = match &app.toast {
         Some(toast) => Line::styled(format!(" {}", toast.text), theme.tone(toast.tone)),
         None => {
+            let mut all: Vec<(&str, &str, bool)> = hints(app)
+                .into_iter()
+                .map(|(key, meaning)| (key, meaning, true))
+                .collect();
+            let actions = action_hints(app);
+            let insert_at = 1.min(all.len());
+            all.splice(insert_at..insert_at, actions);
+
             let mut spans = vec![Span::raw(" ")];
-            for (index, (key, meaning)) in hints(app).into_iter().enumerate() {
+            for (index, (key, meaning, enabled)) in all.into_iter().enumerate() {
                 if index > 0 {
                     spans.push(Span::styled(theme.separator(), theme.muted()));
                 }
-                spans.push(Span::styled(key_label(key, theme), theme.accent()));
-                spans.push(Span::raw(format!(" {meaning}")));
+                if enabled {
+                    spans.push(Span::styled(key_label(key, theme), theme.accent()));
+                    spans.push(Span::raw(format!(" {meaning}")));
+                } else {
+                    spans.push(Span::styled(format!("{key} {meaning}"), theme.muted()));
+                }
             }
             Line::from(spans)
         }

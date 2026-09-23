@@ -1,4 +1,5 @@
 mod blocked;
+mod confirm;
 mod dashboard;
 mod database_detail;
 mod header;
@@ -56,6 +57,7 @@ pub fn render(frame: &mut Frame, app: &App, theme: &Theme) {
 
     match &app.overlay {
         Some(Overlay::Help) => help::render(frame, body_area, app, theme),
+        Some(Overlay::Confirm(confirm)) => confirm::render(frame, body_area, confirm, theme),
         Some(Overlay::ProfilePicker(picker)) => {
             profile_picker::render(frame, body_area, app, picker, theme)
         }

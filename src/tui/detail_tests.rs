@@ -28,11 +28,11 @@ fn enter_on_a_service_opens_its_overview_and_polls_it() {
     update(&mut app, key(KeyCode::Tab));
     let effects = update(&mut app, key(KeyCode::Enter));
     assert_eq!(detail(&app).tab, DetailTab::Overview);
+    // The latest deployment is already in flight from the dashboard.
     assert_eq!(
         fetched(&effects),
         vec![
             Request::Service(API_SERVICE),
-            Request::LatestDeployment(API_SERVICE),
             Request::Metrics(API_SERVICE),
             Request::MetricsHistory(API_SERVICE),
             Request::Deployments(API_SERVICE),
