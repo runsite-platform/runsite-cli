@@ -73,6 +73,35 @@ fn mutated(app: &mut App, mutation: Mutation, result: Result<(), FetchError>) ->
 }
 
 #[test]
+fn a_freshly_opened_service_waits_for_the_deployment_check() {
+    let mut app = service_detail('1');
+    deliver(
+        &mut app,
+        Request::Service(API_SERVICE),
+        Payload::Service(Box::new(service(
+            API_SERVICE,
+            "api",
+            "running",
+            Some(LANDING),
+        ))),
+    );
+    update(&mut app, char_key('D'));
+    assert!(app.overlay.is_none());
+    assert!(app
+        .toast
+        .as_ref()
+        .is_some_and(|toast| toast.text.contains("checking for a deployment in progress")));
+
+    deliver(
+        &mut app,
+        Request::LatestDeployment(API_SERVICE),
+        Payload::LatestDeployment(None),
+    );
+    update(&mut app, char_key('D'));
+    assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
+}
+
+#[test]
 fn restart_asks_first_and_y_sends_exactly_one_request() {
     let mut app = dashboard_on_resources();
     let effects = update(&mut app, char_key('R'));

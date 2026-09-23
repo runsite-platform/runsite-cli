@@ -8,6 +8,7 @@ use uuid::Uuid;
 pub const READ_ONLY_REASON: &str = "needs a write key";
 pub const IN_PROGRESS_REASON: &str = "a deployment is in progress";
 pub const SCOPE_UNKNOWN_REASON: &str = "checking the key's permissions";
+pub const CHECKING_DEPLOYMENT_REASON: &str = "checking for a deployment in progress";
 
 /// A disabled action: what the user pressed and why it cannot run.
 #[derive(Clone, Debug, PartialEq, Eq)]

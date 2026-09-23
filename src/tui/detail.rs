@@ -67,6 +67,8 @@ pub struct ServiceDetailState {
     pub service: Option<ServiceInfo>,
     /// Newest deployment, polled fast to notice a deploy or rollback in progress.
     pub latest_deployment: Option<DeploymentInfo>,
+    /// True once the latest deployment or the deployment list has answered.
+    pub deployments_checked: bool,
     pub metrics: Option<ResourceMetrics>,
     pub history: Vec<MetricsPoint>,
     pub logs: LogBuffer,
@@ -83,6 +85,7 @@ impl ServiceDetailState {
             name: service.name.clone(),
             service: Some(service),
             latest_deployment: None,
+            deployments_checked: false,
             metrics: None,
             history: Vec::new(),
             logs: LogBuffer::default(),

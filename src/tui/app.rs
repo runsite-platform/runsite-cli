@@ -832,7 +832,8 @@ fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now:
             detail.service = Some(*service);
         }
         Payload::LatestDeployment(deployment) => {
-            detail.latest_deployment = deployment.map(|deployment| *deployment)
+            detail.latest_deployment = deployment.map(|deployment| *deployment);
+            detail.deployments_checked = true;
         }
         Payload::Metrics(metrics) => detail.metrics = Some(metrics),
         Payload::MetricsHistory(points) => detail.history = points,
@@ -848,6 +849,7 @@ fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now:
                 .deploy_cursor
                 .min(deployments.len().saturating_sub(1));
             detail.deployments = Some(deployments);
+            detail.deployments_checked = true;
         }
         Payload::Deployment(deployment) => {
             if let Some(view) = &mut detail.deployment_view {

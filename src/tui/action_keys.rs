@@ -4,6 +4,7 @@
 use super::action::{Effect, Mutation};
 use super::actions::{
     database_mutation, rollback_mutation, service_mutation, ServiceKey, Unavailable,
+    CHECKING_DEPLOYMENT_REASON,
 };
 use super::app::{App, Overlay, Screen};
 use super::dashboard::{Pane, Resource};
@@ -93,7 +94,7 @@ impl App {
                     {
                         return Some(Err(Unavailable {
                             action: service_key.label(),
-                            reason: "checking for a deployment in progress".to_string(),
+                            reason: CHECKING_DEPLOYMENT_REASON.to_string(),
                         }));
                     }
                     Some(mutation.map(|mutation| service_confirm(mutation, &service)))
@@ -130,12 +131,19 @@ impl App {
                         suffix: format!(" to {}?", short_ref(target)),
                     }));
                 }
-                let mutation = service_mutation(
-                    service_key(key)?,
-                    service,
-                    detail.deployment_in_progress(),
-                    scope,
-                );
+                let service_key = service_key(key)?;
+                let mutation =
+                    service_mutation(service_key, service, detail.deployment_in_progress(), scope);
+                // As on the Dashboard: a deploy may be running before the first poll says so.
+                if mutation.is_ok()
+                    && !detail.deployments_checked
+                    && service_key != ServiceKey::StartStop
+                {
+                    return Some(Err(Unavailable {
+                        action: service_key.label(),
+                        reason: CHECKING_DEPLOYMENT_REASON.to_string(),
+                    }));
+                }
                 Some(mutation.map(|mutation| service_confirm(mutation, service)))
             }
             Screen::DatabaseDetail(database) if key == 'S' => {
