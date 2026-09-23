@@ -68,6 +68,20 @@ pub fn database_look(status: &str) -> StatusLook {
     }
 }
 
+pub fn deployment_look(status: &str) -> StatusLook {
+    match status {
+        "running" => look(Glyph::Running, Tone::Good),
+        "failed" => look(Glyph::Failed, Tone::Bad),
+        "cancelled" => look(Glyph::Stopped, Tone::Muted),
+        "pending" | "cloning" | "building" | "deploying" | "rolling_back" => BUSY,
+        _ => UNKNOWN,
+    }
+}
+
+pub fn deployment_in_progress(status: &str) -> bool {
+    deployment_look(status).transitional
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,9 +113,29 @@ mod tests {
     }
 
     #[test]
+    fn every_documented_deployment_status_has_a_look() {
+        for status in [
+            "pending",
+            "cloning",
+            "building",
+            "deploying",
+            "rolling_back",
+        ] {
+            assert!(deployment_in_progress(status), "{status}");
+        }
+        for status in ["running", "failed", "cancelled"] {
+            assert!(!deployment_in_progress(status), "{status}");
+        }
+        assert_eq!(deployment_look("running").tone, Tone::Good);
+        assert_eq!(deployment_look("failed").glyph, Glyph::Failed);
+        assert_eq!(deployment_look("cancelled").glyph, Glyph::Stopped);
+    }
+
+    #[test]
     fn an_unknown_status_is_neutral_and_settled() {
         assert_eq!(service_look("hibernating"), UNKNOWN);
         assert_eq!(database_look(""), UNKNOWN);
+        assert_eq!(deployment_look("queued"), UNKNOWN);
         assert!(!service_look("hibernating").transitional);
     }
 }

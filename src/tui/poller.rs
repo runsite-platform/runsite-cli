@@ -54,11 +54,17 @@ impl Poller {
                         continue;
                     }
                     schedule.cadence = *cadence;
-                    if let (Cadence::Every(interval), Some(due), 0) =
-                        (cadence, schedule.next_due, schedule.failures)
-                    {
-                        schedule.next_due = Some(due.min(now + *interval));
+                    let Cadence::Every(interval) = cadence else {
+                        continue;
+                    };
+                    if schedule.failures > 0 || schedule.in_flight {
+                        continue;
                     }
+                    // A finished `Once` request has no next fetch; start one.
+                    schedule.next_due = Some(match schedule.next_due {
+                        Some(due) => due.min(now + *interval),
+                        None => now + *interval,
+                    });
                 }
                 None => {
                     self.schedules.insert(
@@ -230,6 +236,18 @@ mod tests {
 
         poller.sync(&[(Request::Projects, Cadence::seconds(1))], at(5));
         assert_eq!(poller.take_due(at(6)), vec![Request::Projects]);
+    }
+
+    #[test]
+    fn a_finished_once_request_resumes_when_it_becomes_periodic() {
+        let mut poller = Poller::default();
+        poller.sync(&[(Request::KeyScope, Cadence::Once)], at(0));
+        poller.take_due(at(0));
+        poller.record_success(Request::KeyScope, at(0));
+
+        poller.sync(&[(Request::KeyScope, Cadence::seconds(3))], at(10));
+        assert!(poller.take_due(at(12)).is_empty());
+        assert_eq!(poller.take_due(at(13)), vec![Request::KeyScope]);
     }
 
     #[test]
