@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod error;
 mod output;
+mod tui;
 mod ws;
 
 use anyhow::Result;
