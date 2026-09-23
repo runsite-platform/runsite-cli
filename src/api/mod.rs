@@ -51,6 +51,14 @@ fn describe_error_detail(detail: &Value) -> Option<String> {
     (!problems.is_empty()).then(|| problems.join("; "))
 }
 
+/// The `detail` field of an error body. A body that is not an object (a proxy
+/// answering with a bare string or array) has none.
+fn take_detail(mut body: Value) -> Value {
+    body.get_mut("detail")
+        .map(Value::take)
+        .unwrap_or(Value::Null)
+}
+
 fn describe_structured_detail(detail: &Value) -> Option<String> {
     let field = |key: &str| detail.get(key).and_then(Value::as_str);
     let message = match field("code")? {
@@ -168,7 +176,7 @@ impl ApiClient {
                 .json::<Value>()
                 .await
                 .ok()
-                .map(|mut body| body["detail"].take())
+                .map(take_detail)
                 .unwrap_or(Value::Null);
             let message = describe_error_detail(&detail).unwrap_or_else(|| status.to_string());
             let code = detail["code"].as_str().map(str::to_string);
@@ -494,6 +502,16 @@ mod tests {
         assert_eq!(
             describe_error_detail(&detail).as_deref(),
             Some("Web service not found")
+        );
+    }
+
+    #[test]
+    fn an_error_body_that_is_not_an_object_has_no_detail() {
+        assert_eq!(take_detail(serde_json::json!("Bad Gateway")), Value::Null);
+        assert_eq!(take_detail(serde_json::json!(["x"])), Value::Null);
+        assert_eq!(
+            take_detail(serde_json::json!({"detail": "Not found"})),
+            serde_json::json!("Not found")
         );
     }
 
