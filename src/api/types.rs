@@ -322,6 +322,62 @@ pub struct ProjectDetail {
     pub redis_list: Vec<RedisInProject>,
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ResourceMetrics {
+    pub cpu_usage_percent: f64,
+    pub memory_usage_bytes: i64,
+    pub memory_limit_bytes: i64,
+    pub memory_usage_percent: f64,
+    pub instance_count: i64,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct MetricsPoint {
+    pub timestamp: DateTime<Utc>,
+    pub cpu_usage_percent: f64,
+    pub memory_usage_percent: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MetricsHistory {
+    pub data_points: Vec<MetricsPoint>,
+}
+
+/// A deployment with its build logs; the list endpoint includes them too.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct DeploymentInfo {
+    pub id: Uuid,
+    pub status: String,
+    pub branch: Option<String>,
+    pub commit_sha: Option<String>,
+    pub commit_message: Option<String>,
+    pub image_ref: Option<String>,
+    #[serde(default)]
+    pub is_live: bool,
+    pub build_logs: Option<String>,
+    pub error_message: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeploymentInfoList {
+    pub deployments: Vec<DeploymentInfo>,
+}
+
+/// `GET /databases/{id}`: CPU and memory are only reported for Postgres.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct DatabaseDetail {
+    pub id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub status: String,
+    pub plan_name: Option<String>,
+    pub internal_hostname: Option<String>,
+    pub external_hostname: Option<String>,
+    pub cpu_usage_percent: Option<f64>,
+    pub memory_usage_percent: Option<f64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

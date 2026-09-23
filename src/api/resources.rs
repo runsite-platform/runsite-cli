@@ -1,6 +1,7 @@
 use super::{
-    ApiClient, ApiKeyIdentity, CurrentUser, ProjectDetail, ProjectSummary, ProjectSummaryList,
-    ServiceInfo, ServiceInfoList,
+    ApiClient, ApiKeyIdentity, ContainerLogs, CurrentUser, DatabaseDetail, DeploymentInfo,
+    DeploymentInfoList, MetricsHistory, MetricsPoint, ProjectDetail, ProjectSummary,
+    ProjectSummaryList, ResourceMetrics, ServiceInfo, ServiceInfoList,
 };
 use anyhow::Result;
 use uuid::Uuid;
@@ -28,6 +29,74 @@ impl ApiClient {
     pub async fn services(&self) -> Result<Vec<ServiceInfo>> {
         let list: ServiceInfoList = self.get("/api/v1/web-services").await?;
         Ok(list.web_services)
+    }
+
+    pub async fn service(&self, service_id: Uuid) -> Result<ServiceInfo> {
+        self.get(&format!("/api/v1/web-services/{}", service_id))
+            .await
+    }
+
+    /// All zeros while the service is not `running`.
+    pub async fn service_metrics(&self, service_id: Uuid) -> Result<ResourceMetrics> {
+        self.get(&format!("/api/v1/web-services/{}/metrics", service_id))
+            .await
+    }
+
+    pub async fn service_metrics_history(
+        &self,
+        service_id: Uuid,
+        period_seconds: u32,
+    ) -> Result<Vec<MetricsPoint>> {
+        let history: MetricsHistory = self
+            .get(&format!(
+                "/api/v1/web-services/{}/metrics/history?period={}",
+                service_id, period_seconds
+            ))
+            .await?;
+        Ok(history.data_points)
+    }
+
+    /// Raw log text; `since` is unix seconds.
+    pub async fn service_logs(
+        &self,
+        service_id: Uuid,
+        tail: u32,
+        since: Option<i64>,
+    ) -> Result<String> {
+        let mut path = format!("/api/v1/web-services/{}/logs?tail={}", service_id, tail);
+        if let Some(since) = since {
+            path.push_str(&format!("&since={}", since));
+        }
+        let logs: ContainerLogs = self.get(&path).await?;
+        Ok(logs.logs)
+    }
+
+    /// Newest first.
+    pub async fn deployments(&self, service_id: Uuid, limit: u32) -> Result<Vec<DeploymentInfo>> {
+        let list: DeploymentInfoList = self
+            .get(&format!(
+                "/api/v1/web-services/{}/deployments?limit={}",
+                service_id, limit
+            ))
+            .await?;
+        Ok(list.deployments)
+    }
+
+    pub async fn deployment(
+        &self,
+        service_id: Uuid,
+        deployment_id: Uuid,
+    ) -> Result<DeploymentInfo> {
+        self.get(&format!(
+            "/api/v1/web-services/{}/deployments/{}",
+            service_id, deployment_id
+        ))
+        .await
+    }
+
+    pub async fn database(&self, database_id: Uuid) -> Result<DatabaseDetail> {
+        self.get(&format!("/api/v1/databases/{}", database_id))
+            .await
     }
 }
 
@@ -72,6 +141,159 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(server)
             .await;
+    }
+
+    const SERVICE_ID: &str = "3f2a1b4c-0000-4000-8000-000000000001";
+    const DEPLOYMENT_ID: &str = "3f2a1b4c-0000-4000-8000-00000000000d";
+
+    fn service_id() -> Uuid {
+        Uuid::parse_str(SERVICE_ID).unwrap()
+    }
+
+    fn deployment_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": DEPLOYMENT_ID, "web_service_id": SERVICE_ID, "commit_sha": "3f2a9c1d",
+            "commit_message": "fix: login", "branch": "main", "image_ref": null,
+            "status": "building", "is_live": false, "build_logs": "Step 1/4\nStep 2/4",
+            "error_message": null, "started_at": null, "finished_at": null,
+            "trigger_type": "manual", "created_at": "2026-09-23T10:00:00Z"
+        })
+    }
+
+    #[tokio::test]
+    async fn service_metrics_read_usage_and_instances() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}/metrics"),
+            serde_json::json!({
+                "cpu_usage_millicores": 120, "cpu_limit_millicores": 1000, "cpu_usage_percent": 12.0,
+                "memory_usage_bytes": 268435456, "memory_limit_bytes": 536870912,
+                "memory_usage_percent": 50.0, "instance_count": 2, "timestamp": "2026-09-23T10:00:00Z"
+            }),
+        )
+        .await;
+
+        let metrics = client_for(&server)
+            .service_metrics(service_id())
+            .await
+            .unwrap();
+        assert_eq!(metrics.instance_count, 2);
+        assert_eq!(metrics.memory_usage_percent, 50.0);
+    }
+
+    #[tokio::test]
+    async fn metrics_history_asks_for_the_period() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v1/web-services/{SERVICE_ID}/metrics/history"
+            )))
+            .and(wiremock::matchers::query_param("period", "3600"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data_points": [{
+                    "timestamp": "2026-09-23T10:00:00Z", "cpu_usage_millicores": 120,
+                    "cpu_limit_millicores": 1000, "cpu_usage_percent": 12.0,
+                    "memory_usage_bytes": 1, "memory_limit_bytes": 2,
+                    "memory_usage_percent": 50.0, "instance_count": 1
+                }],
+                "period_seconds": 3600
+            })))
+            .mount(&server)
+            .await;
+
+        let points = client_for(&server)
+            .service_metrics_history(service_id(), 3600)
+            .await
+            .unwrap();
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].cpu_usage_percent, 12.0);
+    }
+
+    #[tokio::test]
+    async fn logs_send_tail_and_since() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/web-services/{SERVICE_ID}/logs")))
+            .and(wiremock::matchers::query_param("tail", "1000"))
+            .and(wiremock::matchers::query_param("since", "1790157595"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "logs": "2026-09-23T10:00:00.1Z hello\n", "container_id": null,
+                "timestamp": "2026-09-23T10:00:01Z"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let body = client_for(&server)
+            .service_logs(service_id(), 1000, Some(1_790_157_595))
+            .await
+            .unwrap();
+        assert_eq!(body, "2026-09-23T10:00:00.1Z hello\n");
+    }
+
+    #[tokio::test]
+    async fn deployments_include_build_logs() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}/deployments"),
+            serde_json::json!({"deployments": [deployment_json()], "total": 1}),
+        )
+        .await;
+
+        let deployments = client_for(&server)
+            .deployments(service_id(), 10)
+            .await
+            .unwrap();
+        assert_eq!(deployments[0].status, "building");
+        assert_eq!(
+            deployments[0].build_logs.as_deref(),
+            Some("Step 1/4\nStep 2/4")
+        );
+    }
+
+    #[tokio::test]
+    async fn one_deployment_is_fetched_by_id() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}/deployments/{DEPLOYMENT_ID}"),
+            deployment_json(),
+        )
+        .await;
+
+        let deployment_id = Uuid::parse_str(DEPLOYMENT_ID).unwrap();
+        let deployment = client_for(&server)
+            .deployment(service_id(), deployment_id)
+            .await
+            .unwrap();
+        assert_eq!(deployment.id, deployment_id);
+        assert_eq!(deployment.commit_message.as_deref(), Some("fix: login"));
+    }
+
+    #[tokio::test]
+    async fn database_detail_reads_postgres_usage() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            "/api/v1/databases/3f2a1b4c-0000-4000-8000-000000000004",
+            serde_json::json!({
+                "id": "3f2a1b4c-0000-4000-8000-000000000004", "kind": "postgresql",
+                "name": "pg-main", "status": "running", "plan_name": "Starter",
+                "memory_limit_mb": 512, "storage_limit_gb": 5, "region": "eu-central",
+                "internal_hostname": "pg-main.internal", "external_hostname": null,
+                "public_access_enabled": false, "created_at": "2026-01-01T00:00:00Z",
+                "cpu_usage_percent": 7.5, "memory_usage_percent": 40.0, "instance_count": 1
+            }),
+        )
+        .await;
+
+        let database_id = Uuid::parse_str("3f2a1b4c-0000-4000-8000-000000000004").unwrap();
+        let database = client_for(&server).database(database_id).await.unwrap();
+        assert_eq!(database.kind, "postgresql");
+        assert_eq!(database.cpu_usage_percent, Some(7.5));
+        assert_eq!(database.external_hostname, None);
     }
 
     #[tokio::test]
