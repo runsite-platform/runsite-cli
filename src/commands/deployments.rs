@@ -146,10 +146,12 @@ mod tests {
             branch: Some("main".to_string()),
             commit_sha: commit_sha.map(str::to_string),
             commit_message: commit_message.map(str::to_string),
+            image_ref: None,
             is_live: false,
             trigger_type: None,
             error_message: None,
             rollback_from_deployment_id: None,
+            build_logs: None,
             created_at: None,
         }
     }

@@ -2,8 +2,8 @@ use super::actions::ActionKey;
 use super::log_buffer::LogQuery;
 use super::poller::Ticket;
 use crate::api::{
-    ApiKeyIdentity, Credentials, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint,
-    ProjectDetail, ProjectSummary, ResourceMetrics, ServiceInfo,
+    ApiKeyIdentity, Credentials, DatabaseDetail, Deployment, MetricsPoint, Project, ProjectDetail,
+    ResourceMetrics, Service, User,
 };
 use crate::error::ApiError;
 use chrono::{DateTime, Utc};
@@ -96,18 +96,18 @@ impl Mutation {
 
 #[derive(Debug)]
 pub enum Payload {
-    CurrentUser(CurrentUser),
+    CurrentUser(User),
     KeyScope(ApiKeyIdentity),
-    Projects(Vec<ProjectSummary>),
+    Projects(Vec<Project>),
     ProjectDetail(ProjectDetail),
-    UnassignedServices(Vec<ServiceInfo>),
-    Service(Box<ServiceInfo>),
-    LatestDeployment(Option<Box<DeploymentInfo>>),
+    UnassignedServices(Vec<Service>),
+    Service(Box<Service>),
+    LatestDeployment(Option<Box<Deployment>>),
     Metrics(ResourceMetrics),
     MetricsHistory(Vec<MetricsPoint>),
     Logs { body: String, query: LogQuery },
-    Deployments(Vec<DeploymentInfo>),
-    Deployment(Box<DeploymentInfo>),
+    Deployments(Vec<Deployment>),
+    Deployment(Box<Deployment>),
     Database(Box<DatabaseDetail>),
 }
 

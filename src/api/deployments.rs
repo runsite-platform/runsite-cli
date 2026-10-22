@@ -1,16 +1,10 @@
-use super::{ApiClient, Deployment, DeploymentInfo, DeploymentList};
+use super::{ApiClient, Deployment, DeploymentList};
 use anyhow::{anyhow, Result};
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 impl ApiClient {
-    /// Newest first. `T` is the caller's view of a deployment: `Deployment` or
-    /// `DeploymentInfo` (which carries build logs).
-    pub async fn deployments<T: DeserializeOwned>(
-        &self,
-        service_id: Uuid,
-        limit: u32,
-    ) -> Result<DeploymentList<T>> {
+    /// Newest first, without build logs: read one deployment for those.
+    pub async fn deployments(&self, service_id: Uuid, limit: u32) -> Result<DeploymentList> {
         self.get_with_query(
             &format!("/api/v1/web-services/{}/deployments", service_id),
             &[("limit", limit.to_string())],
@@ -18,11 +12,7 @@ impl ApiClient {
         .await
     }
 
-    pub async fn deployment(
-        &self,
-        service_id: Uuid,
-        deployment_id: Uuid,
-    ) -> Result<DeploymentInfo> {
+    pub async fn deployment(&self, service_id: Uuid, deployment_id: Uuid) -> Result<Deployment> {
         self.get(&format!(
             "/api/v1/web-services/{}/deployments/{}",
             service_id, deployment_id
@@ -116,7 +106,7 @@ mod tests {
         )
         .await;
 
-        let list: DeploymentList<DeploymentInfo> = client_for(&server)
+        let list: DeploymentList = client_for(&server)
             .deployments(uuid(SERVICE_ID), 10)
             .await
             .unwrap();

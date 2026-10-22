@@ -1,9 +1,8 @@
 use super::{
-    ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ProjectScope, ResourceMetrics,
-    ServiceRuntimeStatus, WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
+    ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ProjectScope, ResourceMetrics, Service,
+    ServiceList, ServiceRuntimeStatus, WebServiceCreate,
 };
 use anyhow::Result;
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,21 +23,18 @@ impl ServiceCommand {
 }
 
 impl ApiClient {
-    /// The services in `scope`. `T` is the caller's view of a service:
-    /// `WebService` or `ServiceInfo`.
-    pub async fn services<T: DeserializeOwned>(&self, scope: ProjectScope) -> Result<Vec<T>> {
+    pub async fn services(&self, scope: ProjectScope) -> Result<Vec<Service>> {
         let query: Vec<_> = scope.query().into_iter().collect();
-        let list: WebServiceList<T> = self.get_with_query("/api/v1/web-services", &query).await?;
+        let list: ServiceList = self.get_with_query("/api/v1/web-services", &query).await?;
         Ok(list.web_services)
     }
 
-    /// `T` is the caller's view of a service: `WebServiceDetail` or `ServiceInfo`.
-    pub async fn service<T: DeserializeOwned>(&self, service_id: Uuid) -> Result<T> {
+    pub async fn service(&self, service_id: Uuid) -> Result<Service> {
         self.get(&format!("/api/v1/web-services/{}", service_id))
             .await
     }
 
-    pub async fn create_service(&self, body: &WebServiceCreate) -> Result<WebServiceDetail> {
+    pub async fn create_service(&self, body: &WebServiceCreate) -> Result<Service> {
         self.post("/api/v1/web-services", body).await
     }
 
@@ -100,7 +96,7 @@ impl ApiClient {
         if let Some(id) = name_or_id.and_then(|text| Uuid::parse_str(text).ok()) {
             return Ok(id);
         }
-        let services: Vec<WebService> = self.services(ProjectScope::Everything).await?;
+        let services: Vec<Service> = self.services(ProjectScope::Everything).await?;
         Ok(self.find(services, name_or_id).await?.id)
     }
 }
@@ -108,7 +104,7 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::ServiceInfo;
+    use super::super::Service;
     use super::*;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -149,7 +145,7 @@ mod tests {
         )
         .await;
 
-        let services: Vec<ServiceInfo> = client_for(&server)
+        let services: Vec<Service> = client_for(&server)
             .services(ProjectScope::Everything)
             .await
             .unwrap();
@@ -171,7 +167,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let services: Vec<ServiceInfo> = client_for(&server)
+        let services: Vec<Service> = client_for(&server)
             .services(ProjectScope::WithoutProject)
             .await
             .unwrap();

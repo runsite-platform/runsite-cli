@@ -1,5 +1,5 @@
 use super::{format_age, scroll_offset, truncate};
-use crate::api::{DeploymentInfo, DeploymentStatus, Status};
+use crate::api::{Deployment, DeploymentStatus, Status};
 use crate::tui::app::App;
 use crate::tui::detail::{short_ref, DeploymentView, DetailTab, ServiceDetailState};
 use crate::tui::log_buffer::LogLine;
@@ -216,7 +216,7 @@ fn render_overview(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn deployment_summary(deployment: &DeploymentInfo, app: &App, theme: &Theme) -> String {
+fn deployment_summary(deployment: &Deployment, app: &App, theme: &Theme) -> String {
     let mut summary = short_ref(deployment);
     if let Some(message) = &deployment.commit_message {
         let first_line = message.lines().next().unwrap_or_default();

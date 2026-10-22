@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, Credentials, UserResponse};
+use crate::api::{ApiClient, Credentials, User};
 use crate::config::ActiveProfile;
 use crate::output::Report;
 use anyhow::Result;
@@ -35,7 +35,7 @@ impl Report for LoggedOut {
 
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
-pub struct CurrentUser(pub UserResponse);
+pub struct CurrentUser(pub User);
 
 impl Report for CurrentUser {
     fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {

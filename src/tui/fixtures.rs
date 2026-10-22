@@ -3,8 +3,8 @@
 use super::action::{Action, Effect, FetchError, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
-    ApiKeyIdentity, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint, PostgresInProject,
-    ProjectDetail, ProjectSummary, RedisInProject, ResourceMetrics, ServiceInfo, ServiceSummary,
+    ApiKeyIdentity, DatabaseDetail, Deployment, MetricsPoint, PostgresInProject, Project,
+    ProjectDetail, RedisInProject, ResourceMetrics, Service, ServiceSummary, User,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -124,17 +124,19 @@ pub fn no_deployment_running(app: &mut App, service_id: Uuid) {
     );
 }
 
-pub fn user() -> CurrentUser {
-    CurrentUser {
+pub fn user() -> User {
+    User {
         id: Uuid::from_u128(1),
         email: "ada@example.com".to_string(),
+        full_name: None,
     }
 }
 
-fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> ProjectSummary {
-    ProjectSummary {
+fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> Project {
+    Project {
         id,
         name: name.to_string(),
+        description: None,
         service_summary: ServiceSummary {
             web_services,
             postgresql,
@@ -143,26 +145,29 @@ fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> ProjectS
     }
 }
 
-pub fn projects() -> Vec<ProjectSummary> {
+pub fn projects() -> Vec<Project> {
     vec![
         project(LANDING, "landing", 3, 1),
         project(BLOG, "blog", 1, 0),
     ]
 }
 
-pub fn service(id: Uuid, name: &str, status: &str, project_id: Option<Uuid>) -> ServiceInfo {
-    ServiceInfo {
+pub fn service(id: Uuid, name: &str, status: &str, project_id: Option<Uuid>) -> Service {
+    Service {
         id,
         name: name.to_string(),
         status: status.into(),
         url: Some(format!("https://{name}-x.runsite.app")),
+        subdomain: Some(format!("{name}-x")),
         project_id,
         project_type: Some("web_service".to_string()),
         source_type: Some("git".to_string()),
         image_ref: None,
         github_branch: Some("main".to_string()),
+        github_repo_full_name: None,
         min_instances: Some(1),
         max_instances: Some(1),
+        updated_at: None,
     }
 }
 
@@ -193,7 +198,7 @@ pub fn landing_detail() -> ProjectDetail {
 }
 
 /// What `GET /web-services?project_id=none` answers.
-pub fn unassigned() -> Vec<ServiceInfo> {
+pub fn unassigned() -> Vec<Service> {
     vec![service(LOOSE_SERVICE, "scratch", "sleeping", None)]
 }
 
@@ -226,8 +231,8 @@ pub const DEPLOYMENT_LIVE: Uuid = Uuid::from_u128(0x3f2a9c1d_0000_4000_8000_0000
 pub const DEPLOYMENT_OLD: Uuid = Uuid::from_u128(0x7b3e0f2a_0000_4000_8000_000000000012);
 pub const DEPLOYMENT_NEW: Uuid = Uuid::from_u128(0x4b1c2d3e_0000_4000_8000_000000000013);
 
-pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> DeploymentInfo {
-    DeploymentInfo {
+pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> Deployment {
+    Deployment {
         id,
         status: status.into(),
         branch: Some("main".to_string()),
@@ -238,12 +243,14 @@ pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> Deploymen
         build_logs: Some(
             "Step 1/3 : FROM node:22\nStep 2/3 : RUN npm ci\nStep 3/3 : CMD npm start".to_string(),
         ),
+        trigger_type: Some("manual".to_string()),
         error_message: None,
+        rollback_from_deployment_id: None,
         created_at: Some(at(-7200)),
     }
 }
 
-pub fn deployments() -> Vec<DeploymentInfo> {
+pub fn deployments() -> Vec<Deployment> {
     vec![
         deployment(DEPLOYMENT_LIVE, "running", true, "3f2a9c1d"),
         deployment(DEPLOYMENT_OLD, "running", false, "7b3e0f2a"),

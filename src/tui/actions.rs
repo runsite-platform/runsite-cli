@@ -2,7 +2,7 @@
 
 use super::action::Mutation;
 use crate::api::{
-    Condition, DatabaseStatus, DeploymentInfo, DeploymentStatus, ServiceInfo, ServiceStatus, Status,
+    Condition, DatabaseStatus, Deployment, DeploymentStatus, Service, ServiceStatus, Status,
 };
 use uuid::Uuid;
 
@@ -114,7 +114,7 @@ fn check_scope(action: &'static str, key_scope: Option<&str>) -> Result<(), Unav
 /// `D`, `R` or `S` on a service; `None` for any other key.
 pub fn service_mutation(
     key: ActionKey,
-    service: &ServiceInfo,
+    service: &Service,
     deployments: DeploymentActivity,
     key_scope: Option<&str>,
 ) -> Option<Result<Mutation, Unavailable>> {
@@ -135,7 +135,7 @@ pub fn service_mutation(
 
 fn allowed_service_mutation(
     key: ActionKey,
-    service: &ServiceInfo,
+    service: &Service,
     deployments: DeploymentActivity,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
@@ -165,10 +165,10 @@ fn allowed_service_mutation(
 
 /// `B` on a deployment of `service`.
 pub fn rollback_mutation(
-    service: &ServiceInfo,
-    target: &DeploymentInfo,
-    deployments: &[DeploymentInfo],
-    latest: Option<&DeploymentInfo>,
+    service: &Service,
+    target: &Deployment,
+    deployments: &[Deployment],
+    latest: Option<&Deployment>,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
     let action = ActionKey::Rollback.label();
@@ -240,7 +240,7 @@ mod tests {
 
     const WRITE: Option<&str> = Some("write");
 
-    fn api(status: &str) -> ServiceInfo {
+    fn api(status: &str) -> Service {
         service(API_SERVICE, "api", status, None)
     }
 

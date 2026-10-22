@@ -1,7 +1,7 @@
 use super::parse_key_value;
 use crate::api::{
-    ApiClient, EnvVarCreate, ProjectScope, ServiceCommand, ServiceRuntimeStatus, WebService,
-    WebServiceCreate, WebServiceDetail,
+    ApiClient, EnvVarCreate, ProjectScope, Service, ServiceCommand, ServiceRuntimeStatus,
+    WebServiceCreate,
 };
 use crate::cli::ServiceCreateArgs;
 use crate::output::format::{colorize_status, format_time, or_placeholder};
@@ -24,14 +24,11 @@ struct ServiceRow {
     updated: String,
 }
 
-impl From<&WebService> for ServiceRow {
-    fn from(service: &WebService) -> Self {
+impl From<&Service> for ServiceRow {
+    fn from(service: &Service) -> Self {
         Self {
             name: service.name.clone(),
-            status: service
-                .status
-                .as_ref()
-                .map_or_else(|| "unknown".to_string(), colorize_status),
+            status: colorize_status(&service.status),
             url: or_placeholder(service.url.as_deref()),
             updated: format_time(&service.updated_at),
         }
@@ -42,7 +39,7 @@ impl From<&WebService> for ServiceRow {
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 pub struct Services {
-    pub services: Vec<WebService>,
+    pub services: Vec<Service>,
     #[serde(skip)]
     pub filtered_by_project: bool,
 }
@@ -62,7 +59,7 @@ impl Report for Services {
 
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
-pub struct ServiceCreated(pub WebServiceDetail);
+pub struct ServiceCreated(pub Service);
 
 impl Report for ServiceCreated {
     fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
@@ -79,7 +76,7 @@ impl Report for ServiceCreated {
 
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
-pub struct ServiceStatus(pub WebServiceDetail);
+pub struct ServiceStatus(pub Service);
 
 impl Report for ServiceStatus {
     fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {

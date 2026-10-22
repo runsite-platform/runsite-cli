@@ -10,7 +10,7 @@ use super::app::{App, Overlay, Screen};
 use super::dashboard::{Pane, Resource};
 use super::detail::{short_ref, DetailTab};
 use super::status::Tone;
-use crate::api::ServiceInfo;
+use crate::api::Service;
 use chrono::{DateTime, TimeDelta, Utc};
 
 /// How long actions stay blocked after one was accepted: two fast polls, so
@@ -89,7 +89,7 @@ pub struct ActionHint {
     pub enabled: bool,
 }
 
-fn service_confirm(mutation: Mutation, service: &ServiceInfo) -> Confirm {
+fn service_confirm(mutation: Mutation, service: &Service) -> Confirm {
     let suffix = match mutation {
         Mutation::Deploy { .. } => match (&service.image_ref, &service.github_branch) {
             (Some(image), _) if service.source_type.as_deref() == Some("image") => {

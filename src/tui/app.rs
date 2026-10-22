@@ -7,7 +7,7 @@ use super::login::LoginState;
 use super::poll_plan::desired_polls;
 use super::poller::{Poller, Ticket};
 use super::status::Tone;
-use crate::api::{CurrentUser, DatabaseStatus, ServiceStatus};
+use crate::api::{DatabaseStatus, ServiceStatus, User};
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::BTreeMap;
@@ -24,7 +24,7 @@ pub struct Session {
     /// `RUNSITE_API_TOKEN` overrides the profile's key.
     pub env_token: bool,
     pub has_credentials: bool,
-    pub user: Option<CurrentUser>,
+    pub user: Option<User>,
     pub key_scope: Option<String>,
 }
 

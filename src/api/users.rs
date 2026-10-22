@@ -1,10 +1,8 @@
-use super::{ApiClient, ApiKeyIdentity};
+use super::{ApiClient, ApiKeyIdentity, User};
 use anyhow::Result;
-use serde::de::DeserializeOwned;
 
 impl ApiClient {
-    /// `T` is the caller's view of the user: `UserResponse` or `CurrentUser`.
-    pub async fn current_user<T: DeserializeOwned>(&self) -> Result<T> {
+    pub async fn current_user(&self) -> Result<User> {
         self.get("/api/v1/users/me").await
     }
 
@@ -17,7 +15,7 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::{CurrentUser, UserResponse};
+    use super::super::User;
     use wiremock::MockServer;
 
     fn user_json() -> serde_json::Value {
@@ -32,7 +30,7 @@ mod tests {
         let server = MockServer::start().await;
         serve(&server, "/api/v1/users/me", user_json()).await;
 
-        let user: CurrentUser = client_for(&server).current_user().await.unwrap();
+        let user: User = client_for(&server).current_user().await.unwrap();
         assert_eq!(user.email, "ada@example.com");
     }
 
@@ -41,7 +39,7 @@ mod tests {
         let server = MockServer::start().await;
         serve(&server, "/api/v1/users/me", user_json()).await;
 
-        let user: UserResponse = client_for(&server).current_user().await.unwrap();
+        let user: User = client_for(&server).current_user().await.unwrap();
         assert_eq!(user.full_name.as_deref(), Some("Ada"));
     }
 
@@ -59,10 +57,10 @@ mod tests {
             None,
         );
         let client = super::ApiClient::new(profile.clone());
-        assert!(client.current_user::<CurrentUser>().await.is_err());
+        assert!(client.current_user().await.is_err());
 
         profile.store_api_key(TEST_KEY.to_string()).unwrap();
-        let user: CurrentUser = client.current_user().await.unwrap();
+        let user: User = client.current_user().await.unwrap();
         assert_eq!(user.email, "ada@example.com");
     }
 

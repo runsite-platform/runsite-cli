@@ -167,7 +167,7 @@ pub enum ServiceCommands {
 
 #[derive(ValueEnum, Clone, Copy)]
 pub enum ServiceType {
-    WebService,
+    Service,
     StaticSite,
     Worker,
 }
@@ -175,7 +175,7 @@ pub enum ServiceType {
 impl ServiceType {
     pub fn as_api_value(self) -> &'static str {
         match self {
-            ServiceType::WebService => "web_service",
+            ServiceType::Service => "web_service",
             ServiceType::StaticSite => "static_site",
             ServiceType::Worker => "worker",
         }

@@ -1,12 +1,10 @@
 use super::{ApiClient, Project, ProjectCreate, ProjectDetail, ProjectList};
 use anyhow::Result;
-use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 impl ApiClient {
-    /// `T` is the caller's view of a project: `Project` or `ProjectSummary`.
-    pub async fn projects<T: DeserializeOwned>(&self) -> Result<Vec<T>> {
-        let list: ProjectList<T> = self.get("/api/v1/projects").await?;
+    pub async fn projects(&self) -> Result<Vec<Project>> {
+        let list: ProjectList = self.get("/api/v1/projects").await?;
         Ok(list.projects)
     }
 
@@ -51,7 +49,7 @@ impl ApiClient {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::super::ProjectSummary;
+    use super::super::Project;
     use wiremock::MockServer;
 
     fn projects_json(names: &[&str]) -> serde_json::Value {
@@ -86,7 +84,7 @@ mod tests {
         )
         .await;
 
-        let projects: Vec<ProjectSummary> = client_for(&server).projects().await.unwrap();
+        let projects: Vec<Project> = client_for(&server).projects().await.unwrap();
         assert_eq!(projects[0].name, "landing");
         assert_eq!(projects[0].service_summary.web_services, 2);
         assert_eq!(projects[0].service_summary.postgresql, 1);

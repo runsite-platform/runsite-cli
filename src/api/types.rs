@@ -4,29 +4,51 @@ use uuid::Uuid;
 
 use super::status::{DatabaseStatus, DeploymentStatus, ServiceStatus};
 
-// Auth
+// Account
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UserResponse {
+/// `GET /users/me`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct User {
     pub id: Uuid,
     pub email: String,
-    #[serde(alias = "name")]
+    #[serde(alias = "name", default)]
     pub full_name: Option<String>,
+}
+
+/// `GET /users/me/api-key`: the key this client authenticates with.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ApiKeyIdentity {
+    pub id: Uuid,
+    pub name: String,
+    pub scope: String,
 }
 
 // Projects
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+pub struct ServiceSummary {
+    #[serde(default)]
+    pub web_services: i64,
+    #[serde(default)]
+    pub postgresql: i64,
+    #[serde(default)]
+    pub redis: i64,
+}
+
+/// An item of `GET /projects`, and what `POST /projects` answers.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Project {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub service_summary: ServiceSummary,
 }
 
-/// `GET /projects`. `T` is the caller's view of a project.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectList<T = Project> {
-    pub projects: Vec<T>,
+pub struct ProjectList {
+    pub projects: Vec<Project>,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,35 +128,39 @@ pub struct Connection {
 
 // Web Services
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct WebService {
-    pub id: Uuid,
-    pub name: String,
-    pub status: Option<ServiceStatus>,
-    pub url: Option<String>,
-    pub updated_at: Option<DateTime<Utc>>,
-    pub project_id: Option<Uuid>,
-}
-
-/// `GET /web-services`. `T` is the caller's view of a service.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebServiceList<T = WebService> {
-    pub web_services: Vec<T>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebServiceDetail {
+/// A web service, static site or worker, as every service endpoint returns it.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Service {
     pub id: Uuid,
     pub name: String,
     pub status: ServiceStatus,
+    #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
     pub subdomain: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
     pub project_type: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub image_ref: Option<String>,
+    #[serde(default)]
     pub github_branch: Option<String>,
+    #[serde(default)]
     pub github_repo_full_name: Option<String>,
+    #[serde(default)]
     pub min_instances: Option<i32>,
+    #[serde(default)]
     pub max_instances: Option<i32>,
+    #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServiceList {
+    pub web_services: Vec<Service>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -188,25 +214,38 @@ pub struct WebServiceCreate {
 
 // Deployments
 
-#[derive(Debug, Deserialize, Serialize)]
+/// One deployment. `build_logs` is only filled when a single deployment is read:
+/// lists leave it null.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Deployment {
     pub id: Uuid,
     pub status: DeploymentStatus,
+    #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
     pub commit_sha: Option<String>,
+    #[serde(default)]
     pub commit_message: Option<String>,
     #[serde(default)]
+    pub image_ref: Option<String>,
+    #[serde(default)]
     pub is_live: bool,
+    #[serde(default)]
     pub trigger_type: Option<String>,
+    #[serde(default)]
     pub error_message: Option<String>,
+    #[serde(default)]
     pub rollback_from_deployment_id: Option<Uuid>,
+    #[serde(default)]
+    pub build_logs: Option<String>,
+    #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
 }
 
-/// `GET …/deployments`, newest first. `T` is the caller's view of a deployment.
+/// `GET …/deployments`, newest first.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DeploymentList<T = Deployment> {
-    pub deployments: Vec<T>,
+pub struct DeploymentList {
+    pub deployments: Vec<Deployment>,
     #[serde(default)]
     pub total: i64,
 }
@@ -278,56 +317,6 @@ pub struct BulkEnvVars {
     pub variables: Vec<BulkEnvVarItem>,
 }
 
-// Views used by the interactive TUI. They are kept apart from the types above
-// so that the `--output json` shape of existing commands never changes.
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-/// `active_workspace_name` is not read: the API leaves it null for API keys.
-pub struct CurrentUser {
-    pub id: Uuid,
-    pub email: String,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ApiKeyIdentity {
-    pub id: Uuid,
-    pub name: String,
-    pub scope: String,
-}
-
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
-pub struct ServiceSummary {
-    #[serde(default)]
-    pub web_services: i64,
-    #[serde(default)]
-    pub postgresql: i64,
-    #[serde(default)]
-    pub redis: i64,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ProjectSummary {
-    pub id: Uuid,
-    pub name: String,
-    #[serde(default)]
-    pub service_summary: ServiceSummary,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ServiceInfo {
-    pub id: Uuid,
-    pub name: String,
-    pub status: ServiceStatus,
-    pub url: Option<String>,
-    pub project_id: Option<Uuid>,
-    pub project_type: Option<String>,
-    pub source_type: Option<String>,
-    pub image_ref: Option<String>,
-    pub github_branch: Option<String>,
-    pub min_instances: Option<i32>,
-    pub max_instances: Option<i32>,
-}
-
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct PostgresInProject {
     pub id: Uuid,
@@ -349,7 +338,7 @@ pub struct ProjectDetail {
     pub id: Uuid,
     pub name: String,
     #[serde(default)]
-    pub web_services_list: Vec<ServiceInfo>,
+    pub web_services_list: Vec<Service>,
     #[serde(default)]
     pub databases_list: Vec<PostgresInProject>,
     #[serde(default)]
@@ -375,22 +364,6 @@ pub struct MetricsPoint {
 #[derive(Debug, Deserialize)]
 pub struct MetricsHistory {
     pub data_points: Vec<MetricsPoint>,
-}
-
-/// A deployment with its build logs; the list endpoint includes them too.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct DeploymentInfo {
-    pub id: Uuid,
-    pub status: DeploymentStatus,
-    pub branch: Option<String>,
-    pub commit_sha: Option<String>,
-    pub commit_message: Option<String>,
-    pub image_ref: Option<String>,
-    #[serde(default)]
-    pub is_live: bool,
-    pub build_logs: Option<String>,
-    pub error_message: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
 }
 
 /// `GET /databases/{id}`: CPU and memory are only reported for Postgres.
@@ -498,7 +471,7 @@ mod tests {
     fn user_response_accepts_the_name_field() {
         let json =
             r#"{"id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b", "email": "a@b.c", "name": "Ada"}"#;
-        let parsed: UserResponse = serde_json::from_str(json).unwrap();
+        let parsed: User = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.full_name.as_deref(), Some("Ada"));
     }
 
@@ -512,7 +485,7 @@ mod tests {
             "total": 1
         }"#;
 
-        let parsed: WebServiceList = serde_json::from_str(json).unwrap();
+        let parsed: ServiceList = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.web_services[0].url, None);
     }
 
@@ -577,7 +550,7 @@ mod tests {
             "min_instances": 1, "max_instances": 3, "updated_at": "2026-01-01T00:00:00Z"
         }"#;
 
-        let parsed: WebServiceDetail = serde_json::from_str(json).unwrap();
+        let parsed: Service = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.status, ServiceStatus::Running);
         assert_eq!(parsed.max_instances, Some(3));
     }

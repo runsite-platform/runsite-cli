@@ -231,7 +231,7 @@ impl ApiClient {
     }
 
     /// Confirm an API key is valid and return its owner.
-    pub async fn verify_api_key(&self, key: &str) -> Result<UserResponse> {
+    pub async fn verify_api_key(&self, key: &str) -> Result<User> {
         self.send(
             self.http
                 .get(format!("{}/api/v1/users/me", self.base_url))
@@ -242,7 +242,7 @@ impl ApiClient {
 
     /// Log in with email + password. The session lives in the client's cookie jar;
     /// the response body carries the user, not a token.
-    pub async fn post_login(&self, email: &str, password: &str) -> Result<UserResponse> {
+    pub async fn post_login(&self, email: &str, password: &str) -> Result<User> {
         self.send(
             self.http
                 .post(format!("{}/api/auth/login", self.base_url))
@@ -257,14 +257,22 @@ mod tests {
     use super::lookup::belongs_to_project;
     use super::*;
 
-    fn service(name: &str, project_id: Option<&str>) -> WebService {
-        WebService {
+    fn service(name: &str, project_id: Option<&str>) -> Service {
+        Service {
             id: Uuid::parse_str("8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b").unwrap(),
             name: name.to_string(),
-            status: Some(ServiceStatus::Running),
+            status: ServiceStatus::Running,
             url: None,
-            updated_at: None,
+            subdomain: None,
             project_id: project_id.map(|id| Uuid::parse_str(id).unwrap()),
+            project_type: None,
+            source_type: None,
+            image_ref: None,
+            github_branch: None,
+            github_repo_full_name: None,
+            min_instances: None,
+            max_instances: None,
+            updated_at: None,
         }
     }
 

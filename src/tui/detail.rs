@@ -1,13 +1,12 @@
 use super::actions::DeploymentActivity;
 use super::log_buffer::LogBuffer;
 use crate::api::{
-    DatabaseDetail, DeploymentInfo, MetricsPoint, ResourceMetrics, ServiceInfo, ServiceStatus,
-    Status,
+    DatabaseDetail, Deployment, MetricsPoint, ResourceMetrics, Service, ServiceStatus, Status,
 };
 use uuid::Uuid;
 
 /// Commit prefix, or the deployment id prefix for image deployments.
-pub fn short_ref(deployment: &DeploymentInfo) -> String {
+pub fn short_ref(deployment: &Deployment) -> String {
     match &deployment.commit_sha {
         Some(sha) => sha.chars().take(7).collect(),
         None => deployment.id.to_string().chars().take(8).collect(),
@@ -57,7 +56,7 @@ impl DetailTab {
 #[derive(Debug)]
 pub struct DeploymentView {
     pub id: Uuid,
-    pub detail: Option<DeploymentInfo>,
+    pub detail: Option<Deployment>,
     /// First build-log line shown.
     pub scroll: usize,
 }
@@ -67,22 +66,22 @@ pub struct ServiceDetailState {
     pub service_id: Uuid,
     /// From the dashboard row, until the service itself loads.
     pub name: String,
-    pub service: Option<ServiceInfo>,
+    pub service: Option<Service>,
     /// Newest deployment, polled fast to notice a deploy or rollback in progress.
-    pub latest_deployment: Option<DeploymentInfo>,
+    pub latest_deployment: Option<Deployment>,
     /// True once the latest deployment or the deployment list has answered.
     pub deployments_checked: bool,
     pub metrics: Option<ResourceMetrics>,
     pub history: Vec<MetricsPoint>,
     pub logs: LogBuffer,
-    pub deployments: Option<Vec<DeploymentInfo>>,
+    pub deployments: Option<Vec<Deployment>>,
     pub deploy_cursor: usize,
     pub tab: DetailTab,
     pub deployment_view: Option<DeploymentView>,
 }
 
 impl ServiceDetailState {
-    pub fn new(service: ServiceInfo, tab: DetailTab) -> Self {
+    pub fn new(service: Service, tab: DetailTab) -> Self {
         Self {
             service_id: service.id,
             name: service.name.clone(),
@@ -133,14 +132,14 @@ impl ServiceDetailState {
         self.status().is_some_and(Status::is_transitional) || self.deployment_in_progress()
     }
 
-    pub fn live_deployment(&self) -> Option<&DeploymentInfo> {
+    pub fn live_deployment(&self) -> Option<&Deployment> {
         self.deployments
             .iter()
             .flatten()
             .find(|deployment| deployment.is_live)
     }
 
-    pub fn selected_deployment(&self) -> Option<&DeploymentInfo> {
+    pub fn selected_deployment(&self) -> Option<&Deployment> {
         self.deployments.as_ref()?.get(self.deploy_cursor)
     }
 }

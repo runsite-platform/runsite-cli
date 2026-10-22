@@ -1,7 +1,7 @@
 //! Turn what the user typed (an ID or a name) into one resource, the same way
 //! for every kind: services, databases and projects.
 
-use super::{ApiClient, ManagedDatabase, Project, WebService};
+use super::{ApiClient, ManagedDatabase, Project, Service};
 use anyhow::Result;
 use std::fmt;
 use uuid::Uuid;
@@ -20,7 +20,7 @@ pub trait Named {
     fn project_id(&self) -> Option<Uuid>;
 }
 
-impl Named for WebService {
+impl Named for Service {
     const KIND: &'static str = "service";
     const LIST_COMMAND: &'static str = "runsite service list --all";
     const PROJECT_SCOPED: bool = true;
@@ -380,6 +380,7 @@ mod tests {
             id: uuid(OTHER_PROJECT),
             name: "shop".to_string(),
             description: None,
+            service_summary: Default::default(),
         };
         assert_eq!(
             pick(vec![project], Some("shop"), selected()).unwrap().name,

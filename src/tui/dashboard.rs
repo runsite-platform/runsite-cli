@@ -1,7 +1,6 @@
 use super::actions::DeploymentActivity;
 use crate::api::{
-    DeploymentInfo, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
-    Status,
+    Deployment, PostgresInProject, Project, ProjectDetail, RedisInProject, Service, Status,
 };
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -30,7 +29,7 @@ pub struct ProjectRow<'a> {
 /// A row of the Resources pane, borrowed from the loaded project data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Resource<'a> {
-    Service(&'a ServiceInfo),
+    Service(&'a Service),
     Postgres(&'a PostgresInProject),
     Redis(&'a RedisInProject),
 }
@@ -48,8 +47,8 @@ impl<'a> Resource<'a> {
 #[derive(Debug, Default)]
 pub struct DashboardState {
     /// `None` until the first response arrives.
-    pub projects: Option<Vec<ProjectSummary>>,
-    pub unassigned: Option<Vec<ServiceInfo>>,
+    pub projects: Option<Vec<Project>>,
+    pub unassigned: Option<Vec<Service>>,
     pub details: HashMap<Uuid, ProjectDetail>,
     pub selected_project: Option<ProjectChoice>,
     pub resource_cursor: usize,
@@ -60,7 +59,7 @@ pub struct DashboardState {
     pub editing_filter: Option<Pane>,
     /// Newest deployment per service, polled for the selected service so that
     /// `D` and `R` can be refused while a deployment is in progress.
-    pub latest_deployments: HashMap<Uuid, Option<DeploymentInfo>>,
+    pub latest_deployments: HashMap<Uuid, Option<Deployment>>,
 }
 
 /// Case-insensitive substring match; `filter` is already lowercase.
@@ -167,24 +166,21 @@ impl DashboardState {
     /// Web services, then Postgres, then Redis/Valkey.
     fn resource_iter(&self) -> impl Iterator<Item = Resource<'_>> {
         let filter = self.resource_filter.to_lowercase();
-        let (services, databases, redis): (
-            &[ServiceInfo],
-            &[PostgresInProject],
-            &[RedisInProject],
-        ) = match self.selected_project {
-            Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
-                Some(detail) => (
-                    &detail.web_services_list,
-                    &detail.databases_list,
-                    &detail.redis_list,
-                ),
+        let (services, databases, redis): (&[Service], &[PostgresInProject], &[RedisInProject]) =
+            match self.selected_project {
+                Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
+                    Some(detail) => (
+                        &detail.web_services_list,
+                        &detail.databases_list,
+                        &detail.redis_list,
+                    ),
+                    None => (&[], &[], &[]),
+                },
+                Some(ProjectChoice::Unassigned) => {
+                    (self.unassigned.as_deref().unwrap_or_default(), &[], &[])
+                }
                 None => (&[], &[], &[]),
-            },
-            Some(ProjectChoice::Unassigned) => {
-                (self.unassigned.as_deref().unwrap_or_default(), &[], &[])
-            }
-            None => (&[], &[], &[]),
-        };
+            };
         services
             .iter()
             .map(Resource::Service)
