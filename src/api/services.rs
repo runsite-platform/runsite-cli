@@ -1,8 +1,8 @@
 use super::{
-    belongs_to_project, ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ResourceMetrics,
-    ServiceRuntimeStatus, WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
+    ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ResourceMetrics, ServiceRuntimeStatus,
+    WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -94,83 +94,11 @@ impl ApiClient {
     /// A service ID, or a name looked up in the selected project. With no
     /// argument, the project's only service.
     pub async fn resolve_service_id(&self, name_or_id: Option<&str>) -> Result<Uuid> {
-        if let Some(val) = name_or_id {
-            if let Ok(id) = Uuid::parse_str(val) {
-                return Ok(id);
-            }
+        if let Some(id) = name_or_id.and_then(|text| Uuid::parse_str(text).ok()) {
+            return Ok(id);
         }
-
         let services: Vec<WebService> = self.services().await?;
-        let project_id = self.current_project_id();
-        let candidates: Vec<_> = services
-            .iter()
-            .filter(|s| belongs_to_project(s, project_id))
-            .collect();
-
-        if let Some(name) = name_or_id {
-            let matched: Vec<_> = candidates.iter().filter(|s| s.name == name).collect();
-            match matched.len() {
-                0 => Err(self.service_not_found_error(name, &services).await),
-                1 => Ok(matched[0].id),
-                _ => {
-                    let ids: Vec<_> = matched
-                        .iter()
-                        .map(|s| format!("  {} ({})", s.name, s.id))
-                        .collect();
-                    Err(anyhow!(
-                        "multiple services named '{}'. Use ID instead:\n{}",
-                        name,
-                        ids.join("\n")
-                    ))
-                }
-            }
-        } else {
-            match candidates.len() {
-                0 => Err(anyhow!("no services found")),
-                1 => Ok(candidates[0].id),
-                _ => {
-                    let list: Vec<_> = candidates
-                        .iter()
-                        .map(|s| format!("  {} ({})", s.name, s.id))
-                        .collect();
-                    Err(anyhow!(
-                        "multiple services found. Specify a service name:\n{}",
-                        list.join("\n")
-                    ))
-                }
-            }
-        }
-    }
-
-    /// Build the error for a name that resolved to nothing in the current project.
-    ///
-    /// `service list` and this resolver used to disagree: the list showed every
-    /// service on the account while the resolver only accepted ones in the
-    /// selected project, so a name printed by the list could still be rejected
-    /// here. The list now filters too, and this points at the owning project
-    /// whenever the name exists somewhere else.
-    async fn service_not_found_error(&self, name: &str, services: &[WebService]) -> anyhow::Error {
-        let Some(service) = services.iter().find(|s| s.name == name) else {
-            return anyhow!("service '{}' not found", name);
-        };
-
-        let owner = match service.project_id {
-            Some(project_id) => self.project_name(project_id).await,
-            None => None,
-        };
-
-        match owner {
-            Some(project_name) => anyhow!(
-                "service '{}' belongs to project '{}'. Switch with: runsite project use \"{}\"",
-                name,
-                project_name,
-                project_name
-            ),
-            None => anyhow!(
-                "service '{}' is not in the current project. See all services with: runsite service list --all",
-                name
-            ),
-        }
+        Ok(self.find(services, name_or_id).await?.id)
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{ApiClient, Project, ProjectCreate, ProjectDetail, ProjectList};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -25,13 +25,7 @@ impl ApiClient {
         }
 
         let projects: Vec<Project> = self.projects().await?;
-        let matched: Vec<_> = projects.iter().filter(|p| p.name == name_or_id).collect();
-
-        match matched.len() {
-            0 => Err(anyhow!("project '{}' not found", name_or_id)),
-            1 => Ok(matched[0].id),
-            _ => Err(anyhow!("multiple projects named '{}'", name_or_id)),
-        }
+        Ok(self.find(projects, Some(name_or_id)).await?.id)
     }
 
     /// The project a new resource goes into: the one named explicitly, else the
@@ -169,7 +163,9 @@ mod tests {
         let missing = client.resolve_project_id("shop").await.unwrap_err();
         assert_eq!(missing.to_string(), "project 'shop' not found");
         let ambiguous = client.resolve_project_id("blog").await.unwrap_err();
-        assert_eq!(ambiguous.to_string(), "multiple projects named 'blog'");
+        assert!(ambiguous
+            .to_string()
+            .starts_with("multiple projects named 'blog'. Use the ID instead:\n"));
     }
 
     #[tokio::test]

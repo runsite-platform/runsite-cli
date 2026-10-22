@@ -311,8 +311,12 @@ pub enum PlanServiceType {
 
 #[derive(Subcommand)]
 pub enum DbCommands {
-    /// List Postgres and Redis databases
-    List,
+    /// List Postgres and Redis databases in the current project
+    List {
+        /// List databases from every project, not just the selected one
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Create a database (billed from your balance)
     Create {

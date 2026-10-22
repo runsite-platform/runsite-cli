@@ -188,7 +188,9 @@ async fn run(cli: Cli) -> Result<()> {
         },
 
         Commands::Db(sub) => match sub {
-            DbCommands::List => emit(format, &commands::database::list(&client).await?)?,
+            DbCommands::List { all } => {
+                emit(format, &commands::database::list(&client, all).await?)?
+            }
             DbCommands::Create {
                 name,
                 plan,

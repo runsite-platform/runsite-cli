@@ -62,6 +62,8 @@ pub struct ManagedDatabase {
     pub status: String,
     pub plan_name: Option<String>,
     pub storage_limit_gb: Option<i64>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

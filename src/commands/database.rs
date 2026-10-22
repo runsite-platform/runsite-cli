@@ -1,6 +1,6 @@
 use crate::api::{
-    ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine, DatabaseStatus,
-    ManagedDatabase, ServicePlan,
+    belongs_to_project, ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine,
+    DatabaseStatus, ManagedDatabase, ServicePlan,
 };
 use crate::cli::{DbEngine, PlanServiceType};
 use crate::output::format::{colorize_status, or_placeholder, PLACEHOLDER};
@@ -81,13 +81,25 @@ fn optional_number<T: ToString>(value: Option<T>) -> String {
         .unwrap_or_else(|| PLACEHOLDER.to_string())
 }
 
+/// Serialized as a bare array, as `db list --output json` always was.
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
-pub struct Databases(pub Vec<ManagedDatabase>);
+pub struct Databases {
+    pub databases: Vec<ManagedDatabase>,
+    #[serde(skip)]
+    pub filtered_by_project: bool,
+}
 
 impl Report for Databases {
     fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
-        write_table(out, self.0.iter().map(DatabaseRow::from).collect())
+        write_table(out, self.databases.iter().map(DatabaseRow::from).collect())?;
+        if self.databases.is_empty() && self.filtered_by_project {
+            writeln!(
+                out,
+                "No databases in the current project. Use --all to list every database."
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -179,8 +191,21 @@ impl Report for DatabaseDeleted {
     }
 }
 
-pub async fn list(client: &ApiClient) -> Result<Databases> {
-    Ok(Databases(client.databases().await?))
+pub async fn list(client: &ApiClient, all: bool) -> Result<Databases> {
+    let project_id = if all {
+        None
+    } else {
+        client.current_project_id()
+    };
+    Ok(Databases {
+        databases: client
+            .databases()
+            .await?
+            .into_iter()
+            .filter(|database| belongs_to_project(database, project_id))
+            .collect(),
+        filtered_by_project: project_id.is_some(),
+    })
 }
 
 pub async fn plans(client: &ApiClient, service_type: PlanServiceType) -> Result<Plans> {
@@ -300,6 +325,63 @@ mod tests {
             })
         );
         assert_eq!(render_text(&report), "Deleted postgres main.\n");
+    }
+
+    const OTHER_PROJECT_ID: &str = "ca83c4a9-1517-4fe3-93aa-000000000009";
+
+    async fn serve_databases_in_two_projects(server: &MockServer) {
+        serve(
+            server,
+            "/api/v1/databases",
+            serde_json::json!({"databases": [
+                {"id": DATABASE_ID, "kind": "postgresql", "name": "main", "status": "running",
+                 "plan_name": null, "storage_limit_gb": null, "project_id": PROJECT_ID},
+                {"id": "3f2a1b4c-0000-4000-8000-000000000005", "kind": "valkey", "name": "cache",
+                 "status": "running", "plan_name": null, "storage_limit_gb": null,
+                 "project_id": OTHER_PROJECT_ID}
+            ]}),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn list_shows_the_selected_project_unless_all() {
+        let server = MockServer::start().await;
+        serve_databases_in_two_projects(&server).await;
+        let client = client_in_project(&server, Some(PROJECT_ID));
+
+        let scoped = list(&client, false).await.unwrap();
+        let everything = list(&client, true).await.unwrap();
+
+        assert_eq!(render_json(&scoped).as_array().unwrap().len(), 1);
+        assert_eq!(render_json(&everything).as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_database_in_another_project_points_at_that_project() {
+        let server = MockServer::start().await;
+        serve_databases_in_two_projects(&server).await;
+        serve(
+            &server,
+            "/api/v1/projects",
+            serde_json::json!({"projects": [
+                {"id": OTHER_PROJECT_ID, "name": "shop", "description": null}
+            ], "total": 1}),
+        )
+        .await;
+
+        let error = change_state(
+            &client_in_project(&server, Some(PROJECT_ID)),
+            "cache",
+            DatabaseCommand::Start,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "database 'cache' belongs to project 'shop'. Switch with: runsite project use \"shop\""
+        );
     }
 
     #[test]

@@ -121,22 +121,10 @@ impl ApiClient {
             })
     }
 
+    /// A database ID, or a name looked up in the selected project.
     pub async fn resolve_database(&self, name_or_id: &str) -> Result<ManagedDatabase> {
-        let by_id = Uuid::parse_str(name_or_id).ok();
-        let mut matched: Vec<ManagedDatabase> = self
-            .databases()
-            .await?
-            .into_iter()
-            .filter(|database| Some(database.id) == by_id || database.name == name_or_id)
-            .collect();
-        match matched.len() {
-            0 => Err(anyhow!("database '{}' not found", name_or_id)),
-            1 => Ok(matched.remove(0)),
-            _ => Err(anyhow!(
-                "multiple databases named '{}'. Use the ID instead",
-                name_or_id
-            )),
-        }
+        let databases = self.databases().await?;
+        self.find(databases, Some(name_or_id)).await
     }
 }
 
@@ -293,10 +281,9 @@ mod tests {
         let client = client_for(&server);
 
         let ambiguous = client.resolve_database("pg").await.unwrap_err();
-        assert_eq!(
-            ambiguous.to_string(),
-            "multiple databases named 'pg'. Use the ID instead"
-        );
+        assert!(ambiguous
+            .to_string()
+            .starts_with("multiple databases named 'pg'. Use the ID instead:\n"));
         let missing = client.resolve_database("other").await.unwrap_err();
         assert_eq!(missing.to_string(), "database 'other' not found");
     }

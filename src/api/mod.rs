@@ -2,6 +2,7 @@ mod databases;
 mod deployments;
 mod env;
 mod login;
+mod lookup;
 mod projects;
 mod services;
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod types;
 mod users;
 pub use databases::{DatabaseCommand, DatabaseEngine};
 pub use login::Credentials;
+pub use lookup::belongs_to_project;
 pub use services::ServiceCommand;
 pub use types::*;
 
@@ -25,14 +27,6 @@ use uuid::Uuid;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A request that hangs longer than this fails instead of freezing the CLI or a TUI poll.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// True when `service` sits in `project_id`, or when no project is selected.
-pub fn belongs_to_project(service: &WebService, project_id: Option<Uuid>) -> bool {
-    match project_id {
-        Some(selected) => service.project_id == Some(selected),
-        None => true,
-    }
-}
 
 /// Error `detail` is a plain string, a `{code, ...}` object, or for 422 a list
 /// of `{loc, msg}` entries.
