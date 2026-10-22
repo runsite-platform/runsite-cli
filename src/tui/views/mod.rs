@@ -94,7 +94,8 @@ pub fn format_age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
     match seconds {
         0..=59 => format!("{seconds}s ago"),
         60..=3599 => format!("{}m ago", seconds / 60),
-        _ => format!("{}h ago", seconds / 3600),
+        3600..=86_399 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
     }
 }
 
@@ -148,11 +149,13 @@ pub(crate) mod tests {
 
     #[test]
     fn ages_are_rounded_to_the_largest_unit() {
-        let now = DateTime::from_timestamp(10_000, 0).unwrap();
-        let ago = |seconds: i64| DateTime::from_timestamp(10_000 - seconds, 0).unwrap();
+        let now = DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let ago = |seconds: i64| DateTime::from_timestamp(1_000_000 - seconds, 0).unwrap();
         assert_eq!(format_age(now, ago(3)), "3s ago");
         assert_eq!(format_age(now, ago(125)), "2m ago");
         assert_eq!(format_age(now, ago(7300)), "2h ago");
+        assert_eq!(format_age(now, ago(86_399)), "23h ago");
+        assert_eq!(format_age(now, ago(3 * 86_400 + 5)), "3d ago");
     }
 
     #[test]
