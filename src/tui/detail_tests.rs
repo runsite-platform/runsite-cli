@@ -1,8 +1,9 @@
-use super::action::{Action, Effect, FetchError, Payload, Request};
+use super::action::{Action, Effect, Payload, Request};
 use super::app::{update, Screen};
 use super::detail::DetailTab;
 use super::fixtures::*;
 use super::log_buffer::LogQuery;
+use crate::error::ApiError;
 use ratatui::crossterm::event::KeyCode;
 
 fn detail(app: &super::app::App) -> &super::detail::ServiceDetailState {
@@ -174,7 +175,7 @@ fn a_400_from_logs_becomes_the_tab_message() {
     fail(
         &mut app,
         Request::Logs(API_SERVICE),
-        FetchError::Rejected {
+        ApiError::Rejected {
             status: 400,
             message: "Unable to fetch logs: container is starting".to_string(),
         },
@@ -242,7 +243,7 @@ fn a_service_that_disappears_returns_to_the_dashboard() {
     fail(
         &mut app,
         Request::Service(API_SERVICE),
-        FetchError::NotFound {
+        ApiError::NotFound {
             message: "Web service not found".to_string(),
         },
     );

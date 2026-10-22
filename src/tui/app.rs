@@ -1,4 +1,4 @@
-use super::action::{Action, Effect, FetchError, Mutation, Payload, ProfileEntry, Request};
+use super::action::{Action, Effect, Mutation, Payload, ProfileEntry, Request};
 use super::action_gate::{ActionSlot, Confirm};
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
@@ -8,13 +8,13 @@ use super::poll_plan::desired_polls;
 use super::poller::{Poller, Ticket};
 use super::status::Tone;
 use crate::api::{DatabaseStatus, ServiceStatus, User};
+use crate::error::ApiError;
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const TOAST_SECONDS: i64 = 4;
-pub const RATE_LIMIT_MESSAGE: &str = "Rate limit reached, try again in a minute";
 pub const INVALID_KEY_NOTICE: &str = "Your API key is invalid or revoked";
 
 #[derive(Debug)]
@@ -294,9 +294,9 @@ impl App {
     }
 
     /// 401 and a blocked account end the session whatever the request was.
-    fn end_session(&mut self, error: &FetchError) -> Option<Vec<Effect>> {
+    fn end_session(&mut self, error: &ApiError) -> Option<Vec<Effect>> {
         match error {
-            FetchError::Unauthorized { .. } => {
+            ApiError::Unauthorized { .. } => {
                 if self.session.env_token {
                     self.exit = Some(ExitReason::EnvTokenRejected);
                     return Some(vec![Effect::Exit]);
@@ -305,7 +305,7 @@ impl App {
                 self.reset_session(Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE)));
                 Some(Vec::new())
             }
-            FetchError::Blocked { reason } => {
+            ApiError::Blocked { reason } => {
                 self.reset_session(Screen::Blocked {
                     reason: reason.clone(),
                 });
@@ -315,13 +315,13 @@ impl App {
         }
     }
 
-    fn handle_mutation_error(&mut self, mutation: Mutation, error: FetchError) -> Vec<Effect> {
+    fn handle_mutation_error(&mut self, mutation: Mutation, error: ApiError) -> Vec<Effect> {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
         match error {
-            FetchError::RateLimited => self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad),
-            FetchError::NotFound { .. } => {
+            ApiError::RateLimited => self.show_toast(ApiError::RateLimited.to_string(), Tone::Bad),
+            ApiError::NotFound { .. } => {
                 let target_gone = !matches!(mutation, Mutation::Rollback { .. });
                 if target_gone && !matches!(self.screen, Screen::Dashboard) {
                     self.screen = Screen::Dashboard;
@@ -329,14 +329,14 @@ impl App {
                 self.show_toast("No longer exists", Tone::Bad);
             }
             other => {
-                self.show_toast(other.message(), Tone::Bad);
+                self.show_toast(other.to_string(), Tone::Bad);
                 self.poller.refresh_all(self.now);
             }
         }
         Vec::new()
     }
 
-    fn handle_fetch_error(&mut self, request: Request, error: FetchError) -> Vec<Effect> {
+    fn handle_fetch_error(&mut self, request: Request, error: ApiError) -> Vec<Effect> {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
@@ -348,16 +348,15 @@ impl App {
             }
         }
         match error {
-            FetchError::RateLimited => self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad),
-            FetchError::NotFound { .. } => self.handle_not_found(request),
-            FetchError::Forbidden { message } | FetchError::Rejected { message, .. } => {
+            ApiError::RateLimited => self.show_toast(ApiError::RateLimited.to_string(), Tone::Bad),
+            ApiError::NotFound { .. } => self.handle_not_found(request),
+            ApiError::Forbidden { message } | ApiError::Rejected { message, .. } => {
                 self.last_error = Some(message.clone());
                 self.show_toast(message, Tone::Bad);
             }
             // Offline shows in the status line; the rest ended the session above.
-            FetchError::Offline { .. }
-            | FetchError::Unauthorized { .. }
-            | FetchError::Blocked { .. } => {}
+            ApiError::Offline { .. } | ApiError::Unauthorized { .. } | ApiError::Blocked { .. } => {
+            }
         }
         Vec::new()
     }
@@ -401,7 +400,7 @@ impl App {
     fn handle_login_result(
         &mut self,
         generation: u64,
-        result: Result<String, FetchError>,
+        result: Result<String, ApiError>,
     ) -> Vec<Effect> {
         if generation != self.generation {
             return Vec::new();
@@ -424,12 +423,12 @@ impl App {
                 // Requests sent with the old key may still answer 401.
                 self.reset_session(Screen::Dashboard);
             }
-            Err(FetchError::Blocked { reason }) => {
+            Err(ApiError::Blocked { reason }) => {
                 self.screen = Screen::Blocked { reason };
             }
             Err(error) => {
                 login.submitting = false;
-                login.error = Some(error.message());
+                login.error = Some(error.to_string());
             }
         }
         Vec::new()

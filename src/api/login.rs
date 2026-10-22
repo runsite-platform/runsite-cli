@@ -154,17 +154,11 @@ mod tests {
             .err()
             .unwrap();
 
-        match error.downcast_ref::<ApiError>() {
-            Some(ApiError::Http {
-                status: 403,
-                code: Some(code),
-                message,
-                ..
-            }) => {
-                assert_eq!(code, "registration_review_required");
-                assert_eq!(message, "Your account is awaiting review");
-            }
-            other => panic!("unexpected error: {:?}", other),
-        }
+        assert_eq!(
+            error.downcast_ref::<ApiError>(),
+            Some(&ApiError::Forbidden {
+                message: "Your account is awaiting review".to_string()
+            })
+        );
     }
 }

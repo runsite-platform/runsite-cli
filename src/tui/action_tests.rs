@@ -1,7 +1,8 @@
-use super::action::{Action, Effect, FetchError, Mutation, Payload, Request};
-use super::app::{update, App, Overlay, Screen, RATE_LIMIT_MESSAGE};
+use super::action::{Action, Effect, Mutation, Payload, Request};
+use super::app::{update, App, Overlay, Screen};
 use super::fixtures::*;
 use super::status::Tone;
+use crate::error::ApiError;
 use ratatui::crossterm::event::KeyCode;
 
 fn mutations(effects: &[Effect]) -> Vec<Mutation> {
@@ -63,7 +64,7 @@ fn settled_service_detail() -> App {
     app
 }
 
-fn mutated(app: &mut App, mutation: Mutation, result: Result<(), FetchError>) -> Vec<Effect> {
+fn mutated(app: &mut App, mutation: Mutation, result: Result<(), ApiError>) -> Vec<Effect> {
     let action = Action::Mutated {
         generation: app.generation,
         mutation,
@@ -174,7 +175,7 @@ fn a_rejected_action_does_not_block_the_next_one() {
         Mutation::Restart {
             service_id: API_SERVICE,
         },
-        Err(FetchError::RateLimited),
+        Err(ApiError::RateLimited),
     );
     update(&mut app, char_key('R'));
     assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
@@ -393,10 +394,13 @@ fn a_rate_limited_action_is_not_retried() {
         Mutation::Deploy {
             service_id: API_SERVICE,
         },
-        Err(FetchError::RateLimited),
+        Err(ApiError::RateLimited),
     );
     assert!(mutations(&effects).is_empty());
-    assert_eq!(app.toast.as_ref().unwrap().text, RATE_LIMIT_MESSAGE);
+    assert_eq!(
+        app.toast.as_ref().unwrap().text,
+        ApiError::RateLimited.to_string()
+    );
     assert!(
         !app.poller.backing_off(),
         "polling is not slowed by a mutation"
@@ -411,7 +415,7 @@ fn a_failed_action_shows_the_api_detail_and_refetches() {
         Mutation::StopService {
             service_id: API_SERVICE,
         },
-        Err(FetchError::Forbidden {
+        Err(ApiError::Forbidden {
             message: "This action needs a `write` key (yours: `read`)".to_string(),
         }),
     );
@@ -431,7 +435,7 @@ fn an_action_on_a_deleted_service_returns_to_the_dashboard() {
         Mutation::Restart {
             service_id: API_SERVICE,
         },
-        Err(FetchError::NotFound {
+        Err(ApiError::NotFound {
             message: "Web service not found".to_string(),
         }),
     );
@@ -473,7 +477,7 @@ fn a_result_from_the_previous_session_does_not_unblock_the_current_action() {
             mutation: Mutation::Restart {
                 service_id: API_SERVICE,
             },
-            result: Err(FetchError::RateLimited),
+            result: Err(ApiError::RateLimited),
         },
     );
 

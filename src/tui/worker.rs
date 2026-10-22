@@ -1,10 +1,11 @@
 //! Runs effects against the API in background tasks and reports back as actions.
 
-use super::action::{Action, FetchError, Mutation, Payload, Request};
+use super::action::{Action, Mutation, Payload, Request};
 use super::log_buffer::LogQuery;
 use super::poller::Ticket;
 use crate::api::{ApiClient, Credentials, DatabaseCommand, ProjectScope, ServiceCommand};
 use crate::config::ActiveProfile;
+use crate::error::ApiError;
 use anyhow::{bail, Result};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
@@ -30,7 +31,7 @@ impl Worker {
         tokio::spawn(async move {
             let result = load(&client, request)
                 .await
-                .map_err(|error| FetchError::from_error(&error));
+                .map_err(|error| ApiError::classify(&error));
             let _ = results.send(Action::Loaded {
                 ticket,
                 request,
@@ -47,7 +48,7 @@ impl Worker {
                 .service_logs(service, query.tail, query.since)
                 .await
                 .map(|body| Payload::Logs { body, query })
-                .map_err(|error| FetchError::from_error(&error));
+                .map_err(|error| ApiError::classify(&error));
             let _ = results.send(Action::Loaded {
                 ticket,
                 request: Request::Logs(service),
@@ -63,7 +64,7 @@ impl Worker {
         tokio::spawn(async move {
             let result = send_mutation(&client, mutation)
                 .await
-                .map_err(|error| FetchError::from_error(&error));
+                .map_err(|error| ApiError::classify(&error));
             let _ = results.send(Action::Mutated {
                 generation,
                 mutation,
@@ -80,7 +81,7 @@ impl Worker {
         tokio::spawn(async move {
             let result = log_in_and_store(&client, &profile, &credentials)
                 .await
-                .map_err(|error| FetchError::from_error(&error));
+                .map_err(|error| ApiError::classify(&error));
             let _ = results.send(Action::LoggedIn { generation, result });
         });
     }

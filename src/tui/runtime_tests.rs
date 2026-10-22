@@ -1,12 +1,13 @@
 //! `Runtime` against a mock API and a temporary config file: effects go in,
 //! the actions the worker reports come back on the channel.
 
-use super::action::{Action, Effect, FetchError, Mutation, Payload, Request};
+use super::action::{Action, Effect, Mutation, Payload, Request};
 use super::poller::Ticket;
 use super::worker::Worker;
 use super::Runtime;
 use crate::api::test_support::*;
 use crate::config::ConfigFile;
+use crate::error::ApiError;
 use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
@@ -104,7 +105,7 @@ async fn an_api_error_comes_back_classified() {
     assert!(matches!(
         next_action(&mut incoming).await,
         Action::Loaded {
-            result: Err(FetchError::Forbidden { .. }),
+            result: Err(ApiError::Forbidden { .. }),
             ..
         }
     ));

@@ -1,5 +1,6 @@
 use super::tests::render_text;
-use crate::tui::action::{Action, FetchError, Payload, ProfileEntry, Request};
+use crate::error::ApiError;
+use crate::tui::action::{Action, Payload, ProfileEntry, Request};
 use crate::tui::app::{update, App};
 use crate::tui::fixtures::*;
 use crate::tui::theme::Theme;
@@ -89,7 +90,7 @@ fn dashboard_offline() {
     fail(
         &mut app,
         Request::Projects,
-        FetchError::Offline {
+        ApiError::Offline {
             message: "down".to_string(),
         },
     );
@@ -165,7 +166,7 @@ fn login_after_a_revoked_key() {
     fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "bad".to_string(),
         },
     );
@@ -223,7 +224,7 @@ fn blocked_account() {
     fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Blocked {
+        ApiError::Blocked {
             reason: "unpaid invoice".to_string(),
         },
     );
@@ -424,12 +425,10 @@ fn a_log_message_stays_visible_above_existing_lines() {
         },
     );
     if let crate::tui::app::Screen::ServiceDetail(detail) = &mut app.screen {
-        detail
-            .logs
-            .fetch_failed(&crate::tui::action::FetchError::Rejected {
-                status: 400,
-                message: "Service is not ready yet".to_string(),
-            });
+        detail.logs.fetch_failed(&ApiError::Rejected {
+            status: 400,
+            message: "Service is not ready yet".to_string(),
+        });
     }
     let screen = render_text(&app, &unicode(), 120, 40);
     assert!(screen.contains("Service is not ready yet"));

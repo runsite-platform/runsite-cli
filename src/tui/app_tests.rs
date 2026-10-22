@@ -1,11 +1,12 @@
-use super::action::{Action, Effect, FetchError, Payload, ProfileEntry, Request};
-use super::app::{update, ExitReason, Overlay, Screen, INVALID_KEY_NOTICE, RATE_LIMIT_MESSAGE};
+use super::action::{Action, Effect, Payload, ProfileEntry, Request};
+use super::app::{update, ExitReason, Overlay, Screen, INVALID_KEY_NOTICE};
 use super::dashboard::{Pane, ProjectChoice};
 use super::fixtures::*;
+use crate::error::ApiError;
 use ratatui::crossterm::event::KeyCode;
 
-fn offline() -> FetchError {
-    FetchError::Offline {
+fn offline() -> ApiError {
+    ApiError::Offline {
         message: "connection refused".to_string(),
     }
 }
@@ -190,7 +191,7 @@ fn an_invalid_profile_key_opens_login_with_an_explanation() {
     fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "Invalid API key".to_string(),
         },
     );
@@ -208,7 +209,7 @@ fn an_invalid_env_token_exits_instead_of_opening_login() {
     let effects = fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "Invalid API key".to_string(),
         },
     );
@@ -222,7 +223,7 @@ fn a_blocked_account_shows_the_reason_and_only_q_works() {
     fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Blocked {
+        ApiError::Blocked {
             reason: "unpaid invoice".to_string(),
         },
     );
@@ -261,9 +262,12 @@ fn a_rate_limit_backs_off_and_explains_itself() {
     let mut app = loaded_dashboard();
     app.poller.refresh_all(app.now);
     update(&mut app, Action::Tick { now: at(4) });
-    fail(&mut app, Request::Projects, FetchError::RateLimited);
+    fail(&mut app, Request::Projects, ApiError::RateLimited);
     assert!(app.poller.backing_off());
-    assert_eq!(app.toast.as_ref().unwrap().text, RATE_LIMIT_MESSAGE);
+    assert_eq!(
+        app.toast.as_ref().unwrap().text,
+        ApiError::RateLimited.to_string()
+    );
 }
 
 #[test]
@@ -274,7 +278,7 @@ fn a_deleted_project_is_dropped_with_a_toast() {
     fail(
         &mut app,
         Request::ProjectDetail(LANDING),
-        FetchError::NotFound {
+        ApiError::NotFound {
             message: "Project not found".to_string(),
         },
     );
@@ -406,7 +410,7 @@ fn a_failed_login_shows_the_server_message() {
         &mut app,
         Action::LoggedIn {
             generation: 0,
-            result: Err(FetchError::Forbidden {
+            result: Err(ApiError::Forbidden {
                 message: "Your account is awaiting review".to_string(),
             }),
         },
@@ -512,7 +516,7 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
     fail(
         &mut app,
         Request::UnassignedServices,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "Invalid API key".to_string(),
         },
     );
@@ -529,7 +533,7 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
         Action::Loaded {
             ticket: old_projects_send,
             request: Request::Projects,
-            result: Err(FetchError::Unauthorized {
+            result: Err(ApiError::Unauthorized {
                 message: "Invalid API key".to_string(),
             }),
         },
@@ -543,7 +547,7 @@ fn a_new_login_drops_what_the_old_key_loaded() {
     fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "Invalid API key".to_string(),
         },
     );
@@ -570,7 +574,7 @@ fn a_blocked_account_at_login_gets_the_blocked_screen() {
         &mut app,
         Action::LoggedIn {
             generation: 0,
-            result: Err(FetchError::Blocked {
+            result: Err(ApiError::Blocked {
                 reason: String::new(),
             }),
         },
@@ -608,7 +612,7 @@ fn a_deleted_project_is_no_longer_polled() {
     fail(
         &mut app,
         Request::ProjectDetail(LANDING),
-        FetchError::NotFound {
+        ApiError::NotFound {
             message: "Project not found".to_string(),
         },
     );
@@ -651,7 +655,7 @@ fn a_failed_read_is_kept_as_the_latest_error_until_a_success() {
     fail(
         &mut app,
         Request::Projects,
-        FetchError::Rejected {
+        ApiError::Rejected {
             status: 400,
             message: "Bad request".to_string(),
         },

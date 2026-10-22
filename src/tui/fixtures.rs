@@ -1,11 +1,12 @@
 //! Builders shared by the TUI tests.
 
-use super::action::{Action, Effect, FetchError, Payload, Request};
+use super::action::{Action, Effect, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
     ApiKeyIdentity, DatabaseDetail, Deployment, MetricsPoint, PostgresInProject, Project,
     ProjectDetail, RedisInProject, ResourceMetrics, Service, ServiceSummary, User,
 };
+use crate::error::ApiError;
 use chrono::{DateTime, TimeZone, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use uuid::Uuid;
@@ -66,7 +67,7 @@ pub fn deliver(app: &mut App, request: Request, payload: Payload) -> Vec<Effect>
 }
 
 /// Fail the send of `request` that is waiting for its reply.
-pub fn fail(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
+pub fn fail(app: &mut App, request: Request, error: ApiError) -> Vec<Effect> {
     answer(app, request, Err(error))
 }
 
@@ -77,7 +78,7 @@ pub fn next_poll(app: &mut App, request: Request, payload: Payload) -> Vec<Effec
 }
 
 /// The next regular poll sends `request` again, and it fails with `error`.
-pub fn fail_next_poll(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
+pub fn fail_next_poll(app: &mut App, request: Request, error: ApiError) -> Vec<Effect> {
     resend(app, request);
     fail(app, request, error)
 }
@@ -92,7 +93,7 @@ fn resend(app: &mut App, request: Request) {
     );
 }
 
-fn answer(app: &mut App, request: Request, result: Result<Payload, FetchError>) -> Vec<Effect> {
+fn answer(app: &mut App, request: Request, result: Result<Payload, ApiError>) -> Vec<Effect> {
     let ticket = app
         .poller
         .in_flight(&request)

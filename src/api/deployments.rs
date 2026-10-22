@@ -209,7 +209,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error.downcast_ref::<crate::error::ApiError>(),
-            Some(crate::error::ApiError::Http { status: 429, .. })
+            Some(crate::error::ApiError::RateLimited)
         ));
     }
 

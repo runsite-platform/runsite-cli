@@ -5,7 +5,7 @@
 //! Lines in the overlap are de-duplicated by `(timestamp, text)` with a
 //! multiset, which keeps genuinely repeated lines.
 
-use super::action::FetchError;
+use crate::error::ApiError;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::collections::{HashMap, VecDeque};
 
@@ -163,9 +163,9 @@ impl LogBuffer {
     /// True when `error` says why logs are unreadable right now ("Unable to
     /// fetch logs…" comes back as 400): a state of the service, shown in place
     /// of new lines, not an error.
-    pub fn fetch_failed(&mut self, error: &FetchError) -> bool {
+    pub fn fetch_failed(&mut self, error: &ApiError) -> bool {
         match error {
-            FetchError::Rejected {
+            ApiError::Rejected {
                 status: 400,
                 message,
             } => {
@@ -641,14 +641,14 @@ mod tests {
     #[test]
     fn a_400_is_shown_as_the_reason_and_other_errors_are_not() {
         let mut buffer = LogBuffer::default();
-        let unreadable = FetchError::Rejected {
+        let unreadable = ApiError::Rejected {
             status: 400,
             message: "Unable to fetch logs".to_string(),
         };
         assert!(buffer.fetch_failed(&unreadable));
         assert_eq!(buffer.status_message(), Some("Unable to fetch logs"));
 
-        let server_error = FetchError::Rejected {
+        let server_error = ApiError::Rejected {
             status: 422,
             message: "bad tail".to_string(),
         };
