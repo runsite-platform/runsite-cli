@@ -20,6 +20,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/runsite-platform/runsite-cli/releases/latest"><img src="https://img.shields.io/github/v/release/runsite-platform/runsite-cli?color=8B5CF6" alt="Latest release" /></a>
+  <a href="https://github.com/runsite-platform/runsite-cli/actions/workflows/ci.yml"><img src="https://github.com/runsite-platform/runsite-cli/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/built%20with-Rust-DEA584?logo=rust&logoColor=black" alt="Rust" />
   <img src="https://img.shields.io/badge/platform-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows-4169E1" alt="Platforms" />
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT" />
@@ -70,6 +72,20 @@ runsite login --token ak_live_...      # use a key created in the dashboard
 
 `--token` is the path for accounts that sign in with Google or GitHub and have no
 password. In CI, skip `login` entirely and set `RUNSITE_API_TOKEN=ak_live_...`.
+
+## Interactive dashboard
+
+Run `runsite` with no arguments (or `runsite ui`) to open a live dashboard of your
+projects, services and databases, with metrics, deployments and logs for each one.
+
+| Key | Action |
+|---|---|
+| `h` `j` `k` `l` / arrows | Move around |
+| `/` | Filter the list, or search the logs |
+| `D` · `R` · `S` | Deploy · restart · start/stop (asks to confirm) |
+| `n` / `N` | Next / previous search match in logs |
+| `w` · `g` / `G` | Wrap log lines · jump to top / follow the tail |
+| `r` · `?` · `q` | Refresh · help · quit |
 
 ## Commands
 

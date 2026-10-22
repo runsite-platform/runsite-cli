@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://docs.runsite.app/cli/overview/
+    about: Guides and reference for every command
+  - name: Security vulnerability
+    url: https://github.com/runsite-platform/runsite-cli/security/advisories/new
+    about: Report security issues privately, not as a public issue
