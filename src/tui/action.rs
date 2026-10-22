@@ -1,5 +1,6 @@
 use super::actions::ActionKey;
 use super::log_buffer::LogQuery;
+use super::poller::Ticket;
 use crate::api::{
     ApiKeyIdentity, Credentials, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint,
     ProjectDetail, ProjectSummary, ResourceMetrics, ServiceInfo,
@@ -164,6 +165,12 @@ impl FetchError {
         }
     }
 
+    /// Network failures, 5xx and 429 retry with a growing delay; anything
+    /// else waits for the next regular poll.
+    pub fn backs_off(&self) -> bool {
+        matches!(self, FetchError::Offline { .. } | FetchError::RateLimited)
+    }
+
     pub fn message(&self) -> String {
         match self {
             FetchError::Unauthorized { message }
@@ -212,8 +219,9 @@ pub enum Action {
     Tick {
         now: DateTime<Utc>,
     },
+    /// `ticket` names the send this answers; see `Poller::accepts`.
     Loaded {
-        generation: u64,
+        ticket: Ticket,
         request: Request,
         result: Result<Payload, FetchError>,
     },
@@ -242,12 +250,12 @@ pub struct ProfileEntry {
 
 pub enum Effect {
     Fetch {
-        generation: u64,
+        ticket: Ticket,
         request: Request,
     },
     /// Logs need the query built from the buffer's cursor.
     FetchLogs {
-        generation: u64,
+        ticket: Ticket,
         service: Uuid,
         query: LogQuery,
     },

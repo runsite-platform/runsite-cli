@@ -162,7 +162,7 @@ fn login_form() {
 #[test]
 fn login_after_a_revoked_key() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Unauthorized {
@@ -220,7 +220,7 @@ fn profile_picker() {
 #[test]
 fn blocked_account() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Blocked {
@@ -247,11 +247,14 @@ fn loaded_service_detail(tab_key: char) -> App {
         Request::LatestDeployment(API_SERVICE),
         Payload::LatestDeployment(deployments().into_iter().next().map(Box::new)),
     );
-    deliver(
-        &mut app,
-        Request::Deployments(API_SERVICE),
-        Payload::Deployments(deployments()),
-    );
+    // The Logs tab does not poll the deployment list.
+    if tab_key != '2' {
+        deliver(
+            &mut app,
+            Request::Deployments(API_SERVICE),
+            Payload::Deployments(deployments()),
+        );
+    }
     app
 }
 
@@ -284,7 +287,7 @@ fn service_overview() {
 #[test]
 fn a_stopped_service_shows_no_metrics() {
     let mut app = loaded_service_detail('1');
-    deliver(
+    next_poll(
         &mut app,
         Request::Service(API_SERVICE),
         Payload::Service(Box::new(service(

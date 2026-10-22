@@ -2,6 +2,7 @@
 
 use super::action::{Action, FetchError, Mutation, Payload, Request};
 use super::log_buffer::LogQuery;
+use super::poller::Ticket;
 use crate::api::{ApiClient, Credentials, DatabaseCommand, ServiceCommand};
 use crate::config::ActiveProfile;
 use anyhow::{bail, Result};
@@ -23,7 +24,7 @@ impl Worker {
         }
     }
 
-    pub fn fetch(&self, generation: u64, request: Request) {
+    pub fn fetch(&self, ticket: Ticket, request: Request) {
         let client = self.client.clone();
         let results = self.results.clone();
         tokio::spawn(async move {
@@ -31,14 +32,14 @@ impl Worker {
                 .await
                 .map_err(|error| FetchError::from_error(&error));
             let _ = results.send(Action::Loaded {
-                generation,
+                ticket,
                 request,
                 result,
             });
         });
     }
 
-    pub fn fetch_logs(&self, generation: u64, service: Uuid, query: LogQuery) {
+    pub fn fetch_logs(&self, ticket: Ticket, service: Uuid, query: LogQuery) {
         let client = self.client.clone();
         let results = self.results.clone();
         tokio::spawn(async move {
@@ -48,7 +49,7 @@ impl Worker {
                 .map(|body| Payload::Logs { body, query })
                 .map_err(|error| FetchError::from_error(&error));
             let _ = results.send(Action::Loaded {
-                generation,
+                ticket,
                 request: Request::Logs(service),
                 result,
             });

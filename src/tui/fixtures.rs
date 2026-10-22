@@ -60,24 +60,51 @@ pub fn fetched(effects: &[Effect]) -> Vec<Request> {
         .collect()
 }
 
-/// Deliver a successful response for `request` in the current generation.
+/// Answer the send of `request` that is waiting for its reply.
 pub fn deliver(app: &mut App, request: Request, payload: Payload) -> Vec<Effect> {
-    let action = Action::Loaded {
-        generation: app.generation,
-        request,
-        result: Ok(payload),
-    };
-    super::app::update(app, action)
+    answer(app, request, Ok(payload))
 }
 
-/// Deliver a failed response for `request` in the current generation.
+/// Fail the send of `request` that is waiting for its reply.
 pub fn fail(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
-    let action = Action::Loaded {
-        generation: app.generation,
-        request,
-        result: Err(error),
-    };
-    super::app::update(app, action)
+    answer(app, request, Err(error))
+}
+
+/// The next regular poll sends `request` again, and `payload` answers it.
+pub fn next_poll(app: &mut App, request: Request, payload: Payload) -> Vec<Effect> {
+    resend(app, request);
+    deliver(app, request, payload)
+}
+
+/// The next regular poll sends `request` again, and it fails with `error`.
+pub fn fail_next_poll(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
+    resend(app, request);
+    fail(app, request, error)
+}
+
+fn resend(app: &mut App, request: Request) {
+    app.poller.refresh_all(app.now);
+    let now = app.now;
+    super::app::update(app, Action::Tick { now });
+    assert!(
+        app.poller.in_flight(&request).is_some(),
+        "{request:?} is not polled on this screen"
+    );
+}
+
+fn answer(app: &mut App, request: Request, result: Result<Payload, FetchError>) -> Vec<Effect> {
+    let ticket = app
+        .poller
+        .in_flight(&request)
+        .unwrap_or_else(|| panic!("{request:?} was not sent, so nothing can answer it"));
+    super::app::update(
+        app,
+        Action::Loaded {
+            ticket,
+            request,
+            result,
+        },
+    )
 }
 
 pub fn write_key() -> ApiKeyIdentity {

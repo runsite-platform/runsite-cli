@@ -5,7 +5,7 @@ use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
 use super::keymap::{self, Command};
 use super::login::LoginState;
 use super::poll_plan::desired_polls;
-use super::poller::Poller;
+use super::poller::{Poller, Ticket};
 use super::status::Tone;
 use crate::api::CurrentUser;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -164,17 +164,14 @@ impl App {
         vec![Effect::Exit]
     }
 
-    fn fetch_effect(&mut self, request: Request) -> Effect {
+    fn fetch_effect(&mut self, request: Request, ticket: Ticket) -> Effect {
         match (request, &mut self.screen) {
             (Request::Logs(service), Screen::ServiceDetail(detail)) => Effect::FetchLogs {
-                generation: self.generation,
+                ticket,
                 service,
                 query: detail.logs.start_fetch(),
             },
-            _ => Effect::Fetch {
-                generation: self.generation,
-                request,
-            },
+            _ => Effect::Fetch { ticket, request },
         }
     }
 
@@ -191,8 +188,8 @@ impl App {
         self.dashboard.latest_deployments.retain(|service_id, _| {
             on_dashboard && poller.is_active(&Request::LatestDeployment(*service_id))
         });
-        for request in self.poller.take_due(self.now) {
-            effects.push(self.fetch_effect(request));
+        for (request, ticket) in self.poller.take_due(self.now) {
+            effects.push(self.fetch_effect(request, ticket));
         }
         effects
     }
@@ -221,11 +218,11 @@ impl App {
             }
             Action::Key(key) => self.handle_key(key),
             Action::Loaded {
-                generation,
+                ticket,
                 request,
                 result,
             } => {
-                if generation != self.generation || !self.poller.is_active(&request) {
+                if !self.poller.accepts(&request, ticket) {
                     return Vec::new();
                 }
                 match result {
@@ -364,31 +361,24 @@ impl App {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
+        self.poller
+            .record_failure(request, self.now, error.backs_off());
         if let (Request::Logs(_), Screen::ServiceDetail(detail)) = (request, &mut self.screen) {
             if detail.logs.fetch_failed(&error) {
-                self.poller.record_failure(request, self.now, false);
                 return Vec::new();
             }
         }
         match error {
-            // Already handled by `end_session`.
-            FetchError::Unauthorized { .. } | FetchError::Blocked { .. } => {}
-            FetchError::RateLimited => {
-                self.poller.record_failure(request, self.now, true);
-                self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad);
-            }
-            FetchError::Offline { .. } => {
-                self.poller.record_failure(request, self.now, true);
-            }
-            FetchError::NotFound { .. } => {
-                self.poller.record_failure(request, self.now, false);
-                self.handle_not_found(request);
-            }
+            FetchError::RateLimited => self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad),
+            FetchError::NotFound { .. } => self.handle_not_found(request),
             FetchError::Forbidden { message } | FetchError::Rejected { message, .. } => {
-                self.poller.record_failure(request, self.now, false);
                 self.last_error = Some(message.clone());
                 self.show_toast(message, Tone::Bad);
             }
+            // Offline shows in the status line; the rest ended the session above.
+            FetchError::Offline { .. }
+            | FetchError::Unauthorized { .. }
+            | FetchError::Blocked { .. } => {}
         }
         Vec::new()
     }

@@ -102,14 +102,15 @@ fn resources_are_ordered_services_then_postgres_then_redis() {
 }
 
 #[test]
-fn a_result_from_an_older_generation_is_dropped() {
+fn a_reply_from_before_a_session_reset_is_dropped() {
     let mut app = logged_in_app();
     app.start();
-    app.generation = 1;
+    let before_reset = app.poller.in_flight(&Request::Projects).unwrap();
+    app.poller.clear();
     update(
         &mut app,
         Action::Loaded {
-            generation: 0,
+            ticket: before_reset,
             request: Request::Projects,
             result: Ok(Payload::Projects(projects())),
         },
@@ -118,16 +119,67 @@ fn a_result_from_an_older_generation_is_dropped() {
 }
 
 #[test]
+fn a_reply_sent_before_reopening_a_service_is_dropped() {
+    let mut app = service_detail('1');
+    let first_send = app
+        .poller
+        .in_flight(&Request::Service(API_SERVICE))
+        .unwrap();
+    update(&mut app, key(KeyCode::Esc));
+    let effects = update(&mut app, key(KeyCode::Enter));
+    assert!(fetched(&effects).contains(&Request::Service(API_SERVICE)));
+
+    deliver(
+        &mut app,
+        Request::Service(API_SERVICE),
+        Payload::Service(Box::new(service(
+            API_SERVICE,
+            "api",
+            "running",
+            Some(LANDING),
+        ))),
+    );
+    update(
+        &mut app,
+        Action::Loaded {
+            ticket: first_send,
+            request: Request::Service(API_SERVICE),
+            result: Ok(Payload::Service(Box::new(service(
+                API_SERVICE,
+                "api",
+                "deploying",
+                Some(LANDING),
+            )))),
+        },
+    );
+
+    let Screen::ServiceDetail(detail) = &app.screen else {
+        panic!("expected the service detail");
+    };
+    assert_eq!(detail.service.as_ref().unwrap().status, "running");
+}
+
+#[test]
 fn a_result_for_a_request_that_is_no_longer_polled_is_dropped() {
     let mut app = loaded_dashboard();
+    let now = app.now;
+    app.poller.refresh_all(now);
+    update(&mut app, Action::Tick { now });
+    let landing_send = app
+        .poller
+        .in_flight(&Request::ProjectDetail(LANDING))
+        .unwrap();
     update(&mut app, char_key('j'));
     let mut stale = landing_detail();
     stale.name = "renamed".to_string();
     app.dashboard.details.clear();
-    deliver(
+    update(
         &mut app,
-        Request::ProjectDetail(LANDING),
-        Payload::ProjectDetail(stale),
+        Action::Loaded {
+            ticket: landing_send,
+            request: Request::ProjectDetail(LANDING),
+            result: Ok(Payload::ProjectDetail(stale)),
+        },
     );
     assert!(!app.dashboard.details.contains_key(&LANDING));
 }
@@ -135,7 +187,7 @@ fn a_result_for_a_request_that_is_no_longer_polled_is_dropped() {
 #[test]
 fn an_invalid_profile_key_opens_login_with_an_explanation() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Unauthorized {
@@ -153,7 +205,7 @@ fn an_invalid_profile_key_opens_login_with_an_explanation() {
 fn an_invalid_env_token_exits_instead_of_opening_login() {
     let mut app = loaded_dashboard();
     app.session.env_token = true;
-    let effects = fail(
+    let effects = fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Unauthorized {
@@ -167,7 +219,7 @@ fn an_invalid_env_token_exits_instead_of_opening_login() {
 #[test]
 fn a_blocked_account_shows_the_reason_and_only_q_works() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Blocked {
@@ -400,10 +452,6 @@ fn switching_profiles_bumps_the_generation_and_reloads() {
         Some(Effect::SwitchProfile { profile, .. }) if profile == "staging"
     ));
     assert!(fetched(&effects).contains(&Request::Projects));
-    assert!(effects.iter().all(|effect| match effect {
-        Effect::Fetch { generation, .. } => *generation == 1,
-        _ => true,
-    }));
 }
 
 #[test]
@@ -460,7 +508,7 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
     let mut app = loaded_dashboard();
     app.poller.refresh_all(app.now);
     update(&mut app, Action::Tick { now: at(4) });
-    let old_generation = app.generation;
+    let old_projects_send = app.poller.in_flight(&Request::Projects).unwrap();
     fail(
         &mut app,
         Request::UnassignedServices,
@@ -479,7 +527,7 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
     update(
         &mut app,
         Action::Loaded {
-            generation: old_generation,
+            ticket: old_projects_send,
             request: Request::Projects,
             result: Err(FetchError::Unauthorized {
                 message: "Invalid API key".to_string(),
@@ -492,7 +540,7 @@ fn a_late_401_for_the_old_key_does_not_undo_a_login() {
 #[test]
 fn a_new_login_drops_what_the_old_key_loaded() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
         FetchError::Unauthorized {

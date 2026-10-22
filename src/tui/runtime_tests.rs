@@ -2,6 +2,7 @@
 //! the actions the worker reports come back on the channel.
 
 use super::action::{Action, Effect, FetchError, Mutation, Payload, Request};
+use super::poller::Ticket;
 use super::worker::Worker;
 use super::Runtime;
 use crate::api::test_support::*;
@@ -64,16 +65,19 @@ async fn a_fetch_comes_back_as_a_loaded_payload() {
     let (mut runtime, mut incoming) = runtime_for(&server, &dir.path().join("config.toml"));
 
     assert!(runtime.execute(vec![Effect::Fetch {
-        generation: 7,
+        ticket: Ticket::new(7),
         request: Request::CurrentUser,
     }]));
 
     match next_action(&mut incoming).await {
         Action::Loaded {
-            generation: 7,
+            ticket,
             request: Request::CurrentUser,
             result: Ok(Payload::CurrentUser(user)),
-        } => assert_eq!(user.email, "ada@example.com"),
+        } => {
+            assert_eq!(ticket, Ticket::new(7));
+            assert_eq!(user.email, "ada@example.com");
+        }
         _ => panic!("expected the current user"),
     }
 }
@@ -93,7 +97,7 @@ async fn an_api_error_comes_back_classified() {
     let (mut runtime, mut incoming) = runtime_for(&server, &dir.path().join("config.toml"));
 
     runtime.execute(vec![Effect::Fetch {
-        generation: 1,
+        ticket: Ticket::new(1),
         request: Request::CurrentUser,
     }]);
 
@@ -172,7 +176,7 @@ async fn after_a_switch_requests_go_to_the_new_profile() {
             profile: "staging".to_string(),
         },
         Effect::Fetch {
-            generation: 3,
+            ticket: Ticket::new(3),
             request: Request::CurrentUser,
         },
     ]);

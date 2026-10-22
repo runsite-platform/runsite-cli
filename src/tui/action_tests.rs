@@ -251,15 +251,8 @@ fn a_disabled_action_explains_itself_without_a_modal() {
 #[test]
 fn a_read_key_disables_actions() {
     let mut app = dashboard_on_resources();
-    deliver(
-        &mut app,
-        Request::KeyScope,
-        Payload::KeyScope(crate::api::ApiKeyIdentity {
-            id: uuid::Uuid::from_u128(9),
-            name: "ci".to_string(),
-            scope: "read".to_string(),
-        }),
-    );
+    // The key scope is fetched once per session; this one came back read-only.
+    app.session.key_scope = Some("read".to_string());
     update(&mut app, char_key('D'));
     assert!(app.overlay.is_none());
     assert_eq!(
