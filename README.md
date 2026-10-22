@@ -63,6 +63,17 @@ GitHub Releases, verify its SHA-256 checksum, and install it
 Prebuilt targets: `x86_64`/`aarch64` Linux (musl, static), `x86_64`/`aarch64` macOS,
 `x86_64` Windows.
 
+### Update
+
+```bash
+runsite upgrade           # download the latest release, verify it and replace the binary
+runsite upgrade --check   # only report whether a newer version exists
+```
+
+Once a day the CLI checks GitHub in the background and mentions a newer release on
+stderr. The check is skipped in CI, with `--output json`, when stderr is not a terminal,
+and when `RUNSITE_NO_UPDATE_CHECK=1` is set.
+
 ## Authenticate
 
 ```bash
@@ -100,6 +111,7 @@ projects, services and databases, with metrics, deployments and logs for each on
 | **Projects** | `project list` · `project use [name\|id]` · `project unset` |
 | **Context** | `context show` · `context set-url https://api.runsite.app` |
 | **Shell** | `completions bash\|zsh\|fish` |
+| **Update** | `upgrade [--check]` |
 
 ```bash
 runsite service list

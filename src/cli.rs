@@ -113,6 +113,14 @@ pub enum Commands {
     #[command(subcommand)]
     Context(ContextCommands),
 
+    /// Update runsite to the latest release
+    #[command(visible_alias = "update")]
+    Upgrade {
+        /// Only report whether a newer version exists
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Generate shell completion scripts
     Completions {
         /// Shell to generate completions for

@@ -1,4 +1,5 @@
 use super::{format_age, key_label, truncate};
+use crate::tui::actions::ActionKey;
 use crate::tui::app::{App, Overlay, Screen};
 use crate::tui::dashboard::Pane;
 use crate::tui::detail::DetailTab;
@@ -32,7 +33,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         ],
         (None, Screen::Blocked { .. }) => vec![("q", "quit")],
         (None, Screen::DatabaseDetail(_)) => vec![("esc", "back"), ("?", "help"), ("q", "quit")],
-        (None, Screen::ServiceDetail(detail)) if detail.logs.editing_search => {
+        (None, Screen::ServiceDetail(detail)) if detail.logs.editing_search() => {
             vec![("enter", "search"), ("esc", "clear / close")]
         }
         (None, Screen::ServiceDetail(detail)) if detail.deployment_view.is_some() => {
@@ -63,35 +64,28 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-/// Action keys that apply here; disabled ones are drawn greyed out.
+/// Action keys worth the room on this screen; disabled ones are drawn greyed out.
 fn action_hints(app: &App) -> Vec<(&'static str, &'static str, bool)> {
+    use ActionKey::{Deploy, Restart, Rollback, StartStop};
     if app.overlay.is_some() {
         return Vec::new();
     }
-    let keys: &[char] = match &app.screen {
-        Screen::Dashboard if app.dashboard.editing_filter.is_none() => &['D', 'R', 'S'],
-        Screen::ServiceDetail(detail) if detail.deployment_view.is_some() => &['B'],
+    let keys: &[ActionKey] = match &app.screen {
+        Screen::Dashboard if app.dashboard.editing_filter.is_none() => {
+            &[Deploy, Restart, StartStop]
+        }
+        Screen::ServiceDetail(detail) if detail.deployment_view.is_some() => &[Rollback],
         Screen::ServiceDetail(detail) => match detail.tab {
-            DetailTab::Overview => &['D', 'R', 'S'],
-            DetailTab::Deploys => &['B', 'D'],
+            DetailTab::Overview => &[Deploy, Restart, StartStop],
+            DetailTab::Deploys => &[Rollback, Deploy],
             DetailTab::Logs => &[],
         },
-        Screen::DatabaseDetail(_) => &['S'],
+        Screen::DatabaseDetail(_) => &[StartStop],
         _ => &[],
     };
     keys.iter()
-        .filter_map(|key| {
-            let resolved = app.resolve_action(*key)?;
-            let (label, meaning) = match (key, &resolved) {
-                ('D', _) => ("D", "deploy"),
-                ('R', _) => ("R", "restart"),
-                ('B', _) => ("B", "rollback"),
-                (_, Ok(confirm)) if confirm.verb == "Start" => ("S", "start"),
-                (_, Ok(_)) => ("S", "stop"),
-                (_, Err(_)) => ("S", "start/stop"),
-            };
-            Some((label, meaning, resolved.is_ok()))
-        })
+        .filter_map(|key| app.action_hint(*key))
+        .map(|hint| (hint.key, hint.hint, hint.enabled))
         .collect()
 }
 

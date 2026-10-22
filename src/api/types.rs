@@ -21,9 +21,10 @@ pub struct Project {
     pub description: Option<String>,
 }
 
+/// `GET /projects`. `T` is the caller's view of a project.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectList {
-    pub projects: Vec<Project>,
+pub struct ProjectList<T = Project> {
+    pub projects: Vec<T>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,9 +109,10 @@ pub struct WebService {
     pub project_id: Option<Uuid>,
 }
 
+/// `GET /web-services`. `T` is the caller's view of a service.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct WebServiceList {
-    pub web_services: Vec<WebService>,
+pub struct WebServiceList<T = WebService> {
+    pub web_services: Vec<T>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -194,9 +196,11 @@ pub struct Deployment {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// `GET …/deployments`, newest first. `T` is the caller's view of a deployment.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DeploymentList {
-    pub deployments: Vec<Deployment>,
+pub struct DeploymentList<T = Deployment> {
+    pub deployments: Vec<T>,
+    #[serde(default)]
     pub total: i64,
 }
 
@@ -269,11 +273,6 @@ pub struct ProjectSummary {
     pub service_summary: ServiceSummary,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ProjectSummaryList {
-    pub projects: Vec<ProjectSummary>,
-}
-
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct ServiceInfo {
     pub id: Uuid,
@@ -287,11 +286,6 @@ pub struct ServiceInfo {
     pub github_branch: Option<String>,
     pub min_instances: Option<i32>,
     pub max_instances: Option<i32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServiceInfoList {
-    pub web_services: Vec<ServiceInfo>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -357,11 +351,6 @@ pub struct DeploymentInfo {
     pub build_logs: Option<String>,
     pub error_message: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeploymentInfoList {
-    pub deployments: Vec<DeploymentInfo>,
 }
 
 /// `GET /databases/{id}`: CPU and memory are only reported for Postgres.

@@ -1,10 +1,11 @@
 use super::action::{Action, Effect, FetchError, Mutation, Payload, ProfileEntry, Request};
-use super::action_keys::Confirm;
+use super::action_gate::Confirm;
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
 use super::login::{LoginState, LoginTab};
-use super::poller::{Cadence, Poller};
-use super::status::{database_look, deployment_in_progress, Tone};
+use super::poll_plan::desired_polls;
+use super::poller::Poller;
+use super::status::Tone;
 use crate::api::CurrentUser;
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -138,57 +139,28 @@ impl App {
         });
     }
 
+    /// Forget everything tied to the previous credentials: answers still in
+    /// flight, polls, the pending action and the freshness line.
+    fn reset_session(&mut self, screen: Screen) {
+        self.generation += 1;
+        self.poller.clear();
+        self.overlay = None;
+        self.pending_action = None;
+        self.last_refresh = None;
+        self.last_error = None;
+        self.screen = screen;
+    }
+
+    /// An empty dashboard on the project picked for `profile` during this run,
+    /// else on `fallback`.
+    fn fresh_dashboard(&self, profile: &str, fallback: Option<Uuid>) -> DashboardState {
+        let preferred = self.chosen_projects.get(profile).copied().or(fallback);
+        DashboardState::new(preferred)
+    }
+
     fn quit(&mut self) -> Vec<Effect> {
         self.exit = Some(ExitReason::Quit);
         vec![Effect::Exit]
-    }
-
-    fn desired_polls(&self) -> Vec<(Request, Cadence)> {
-        let mut polls = match self.screen {
-            Screen::Login(_) | Screen::Blocked { .. } => return Vec::new(),
-            _ => vec![
-                (Request::CurrentUser, Cadence::Once),
-                (Request::KeyScope, Cadence::Once),
-            ],
-        };
-        match &self.screen {
-            Screen::Dashboard => polls.extend(self.dashboard_polls()),
-            Screen::ServiceDetail(detail) => polls.extend(service_polls(detail)),
-            Screen::DatabaseDetail(database) => {
-                let transitional = database
-                    .detail
-                    .as_ref()
-                    .is_some_and(|detail| database_look(&detail.status).transitional);
-                let interval = if transitional { 1 } else { 5 };
-                polls.push((
-                    Request::Database(database.database_id),
-                    Cadence::seconds(interval),
-                ));
-            }
-            Screen::Login(_) | Screen::Blocked { .. } => {}
-        }
-        polls
-    }
-
-    fn dashboard_polls(&self) -> Vec<(Request, Cadence)> {
-        let mut polls = vec![
-            (Request::Projects, Cadence::seconds(30)),
-            // Needed on every dashboard view: the Unassigned row only exists
-            // when this list has services without a project.
-            (Request::UnassignedServices, Cadence::seconds(30)),
-        ];
-        // Wait for the list: a project saved in the config may no longer exist.
-        if let (Some(_), Some(ProjectChoice::Project(id))) =
-            (&self.dashboard.projects, self.dashboard.selected_project)
-        {
-            polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
-        }
-        if self.dashboard.focus == Pane::Resources {
-            if let Some(Resource::Service(service)) = self.dashboard.selected_resource() {
-                polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
-            }
-        }
-        polls
     }
 
     fn fetch_effect(&mut self, request: Request) -> Effect {
@@ -209,7 +181,7 @@ impl App {
         if effects.iter().any(|effect| matches!(effect, Effect::Exit)) {
             return effects;
         }
-        let desired = self.desired_polls();
+        let desired = desired_polls(&self.screen, &self.dashboard);
         self.poller.sync(&desired, self.now);
         // A deployment state that is no longer polled goes stale: forget it, so the
         // next visit waits for a fresh answer instead of trusting an old one.
@@ -352,19 +324,14 @@ impl App {
                     self.exit = Some(ExitReason::EnvTokenRejected);
                     return Some(vec![Effect::Exit]);
                 }
-                self.generation += 1;
                 self.session.has_credentials = false;
-                self.overlay = None;
-                self.poller.clear();
-                self.screen = Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE));
+                self.reset_session(Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE)));
                 Some(Vec::new())
             }
             FetchError::Blocked { reason } => {
-                self.overlay = None;
-                self.poller.clear();
-                self.screen = Screen::Blocked {
+                self.reset_session(Screen::Blocked {
                     reason: reason.clone(),
-                };
+                });
                 Some(Vec::new())
             }
             _ => None,
@@ -396,6 +363,12 @@ impl App {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
+        if let (Request::Logs(_), Screen::ServiceDetail(detail)) = (request, &mut self.screen) {
+            if detail.logs.fetch_failed(&error) {
+                self.poller.record_failure(request, self.now, false);
+                return Vec::new();
+            }
+        }
         match error {
             // Already handled by `end_session`.
             FetchError::Unauthorized { .. } | FetchError::Blocked { .. } => {}
@@ -409,16 +382,6 @@ impl App {
             FetchError::NotFound { .. } => {
                 self.poller.record_failure(request, self.now, false);
                 self.handle_not_found(request);
-            }
-            FetchError::Rejected {
-                status: 400,
-                message,
-            } if matches!(request, Request::Logs(_)) => {
-                // "Unable to fetch logs…" is a state of the service, not an error.
-                self.poller.record_failure(request, self.now, false);
-                if let Screen::ServiceDetail(detail) = &mut self.screen {
-                    detail.logs.status_message = Some(message);
-                }
             }
             FetchError::Forbidden { message } | FetchError::Rejected { message, .. } => {
                 self.poller.record_failure(request, self.now, false);
@@ -478,26 +441,18 @@ impl App {
         };
         match result {
             Ok(_email) => {
-                // Requests sent with the old key may still answer 401.
-                self.generation += 1;
                 self.session.has_credentials = true;
                 self.session.user = None;
                 self.session.key_scope = None;
-                self.poller.clear();
-                self.pending_action = None;
                 // The key may belong to another account: drop everything loaded
                 // with the old one, but keep the project the user was looking at.
                 let current_project = match self.dashboard.selected_project {
                     Some(ProjectChoice::Project(id)) => Some(id),
                     _ => None,
                 };
-                let preferred = self
-                    .chosen_projects
-                    .get(&self.session.profile)
-                    .copied()
-                    .or(current_project);
-                self.dashboard = DashboardState::new(preferred);
-                self.screen = Screen::Dashboard;
+                self.dashboard = self.fresh_dashboard(&self.session.profile, current_project);
+                // Requests sent with the old key may still answer 401.
+                self.reset_session(Screen::Dashboard);
             }
             Err(FetchError::Blocked { reason }) => {
                 self.screen = Screen::Blocked { reason };
@@ -558,7 +513,7 @@ impl App {
                 Vec::new()
             }
             Screen::ServiceDetail(ref detail) => {
-                if detail.logs.editing_search {
+                if detail.logs.editing_search() {
                     self.handle_search_key(key);
                     return Vec::new();
                 }
@@ -646,16 +601,7 @@ impl App {
     }
 
     fn switch_profile(&mut self, entry: ProfileEntry) -> Vec<Effect> {
-        self.overlay = None;
-        self.generation += 1;
-        self.poller.clear();
-        self.last_refresh = None;
-        let preferred = self
-            .chosen_projects
-            .get(&entry.name)
-            .copied()
-            .or(entry.current_project_id);
-        self.dashboard = DashboardState::new(preferred);
+        self.dashboard = self.fresh_dashboard(&entry.name, entry.current_project_id);
         self.session = Session {
             profile: entry.name.clone(),
             api_url: entry.api_url.clone(),
@@ -664,14 +610,13 @@ impl App {
             user: None,
             key_scope: None,
         };
-        self.screen = if entry.has_key {
+        self.reset_session(if entry.has_key {
             Screen::Dashboard
         } else {
             Screen::Login(LoginState::default())
-        };
+        });
         vec![Effect::SwitchProfile {
             profile: entry.name,
-            api_url: entry.api_url,
         }]
     }
 
@@ -828,43 +773,6 @@ impl App {
     }
 }
 
-fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
-    let id = detail.service_id;
-    let fast = if detail.transitional() { 1 } else { 3 };
-    let mut polls = vec![
-        (Request::Service(id), Cadence::seconds(fast)),
-        (Request::LatestDeployment(id), Cadence::seconds(fast)),
-    ];
-    let deployments_interval = if detail.deployment_in_progress() {
-        3
-    } else {
-        10
-    };
-    match detail.tab {
-        DetailTab::Overview => polls.extend([
-            (Request::Metrics(id), Cadence::seconds(5)),
-            (Request::MetricsHistory(id), Cadence::seconds(60)),
-            (
-                Request::Deployments(id),
-                Cadence::seconds(deployments_interval),
-            ),
-        ]),
-        DetailTab::Logs => polls.push((Request::Logs(id), Cadence::seconds(2))),
-        DetailTab::Deploys => polls.push((
-            Request::Deployments(id),
-            Cadence::seconds(deployments_interval),
-        )),
-    }
-    if let Some(view) = &detail.deployment_view {
-        let cadence = match &view.detail {
-            Some(deployment) if !deployment_in_progress(&deployment.status) => Cadence::Once,
-            _ => Cadence::seconds(3),
-        };
-        polls.push((Request::Deployment(id, view.id), cadence));
-    }
-    polls
-}
-
 fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now: DateTime<Utc>) {
     match payload {
         Payload::Service(service) if service.id == detail.service_id => {
@@ -877,13 +785,7 @@ fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now:
         }
         Payload::Metrics(metrics) => detail.metrics = Some(metrics),
         Payload::MetricsHistory(points) => detail.history = points,
-        Payload::Logs { body, query } => {
-            // Only the reply this buffer is waiting for: an answer to a request
-            // from before the screen was reopened would scramble the order.
-            if detail.logs.finish_fetch(query) {
-                detail.logs.ingest(&body, query, now);
-            }
-        }
+        Payload::Logs { body, query } => detail.logs.receive(query, &body, now),
         Payload::Deployments(deployments) => {
             detail.deploy_cursor = detail
                 .deploy_cursor

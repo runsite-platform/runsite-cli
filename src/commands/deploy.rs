@@ -1,4 +1,4 @@
-use crate::api::{ApiClient, Deployment};
+use crate::api::ApiClient;
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -14,12 +14,7 @@ pub async fn trigger(client: &ApiClient, service: Option<&str>, watch: bool) -> 
     spinner.set_message("Triggering deployment...");
     spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    let deployment: Deployment = client
-        .post(
-            &format!("/api/v1/web-services/{}/deployments", id),
-            &serde_json::json!({}),
-        )
-        .await?;
+    let deployment = client.trigger_deployment(id).await?;
 
     spinner.finish_and_clear();
     println!("Deployment {} triggered.", &deployment.id.to_string()[..8]);

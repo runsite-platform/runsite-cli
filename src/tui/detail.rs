@@ -1,3 +1,4 @@
+use super::actions::DeploymentActivity;
 use super::log_buffer::LogBuffer;
 use super::status::{deployment_in_progress, service_look};
 use crate::api::{DatabaseDetail, DeploymentInfo, MetricsPoint, ResourceMetrics, ServiceInfo};
@@ -105,6 +106,16 @@ impl ServiceDetailState {
     }
 
     /// A deploy or rollback is running even while the service stays `running`.
+    pub fn deployment_activity(&self) -> DeploymentActivity {
+        if self.deployment_in_progress() {
+            DeploymentActivity::Running
+        } else if self.deployments_checked {
+            DeploymentActivity::Idle
+        } else {
+            DeploymentActivity::Unchecked
+        }
+    }
+
     pub fn deployment_in_progress(&self) -> bool {
         self.latest_deployment
             .as_ref()

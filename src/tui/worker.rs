@@ -2,38 +2,25 @@
 
 use super::action::{Action, FetchError, Mutation, Payload, Request};
 use super::log_buffer::LogQuery;
-use crate::api::{ApiClient, Credentials};
-use crate::config::{self, Config};
+use crate::api::{ApiClient, Credentials, DatabaseCommand, ServiceCommand};
+use crate::config::ActiveProfile;
 use anyhow::{bail, Result};
-use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 pub struct Worker {
     client: ApiClient,
-    config: Arc<Mutex<Config>>,
-    profile: String,
+    profile: ActiveProfile,
     results: UnboundedSender<Action>,
 }
 
 impl Worker {
-    pub fn new(
-        config: Arc<Mutex<Config>>,
-        profile: String,
-        api_url: String,
-        results: UnboundedSender<Action>,
-    ) -> Self {
-        let client = ApiClient::new(api_url, config.clone(), profile.clone());
+    pub fn new(profile: ActiveProfile, results: UnboundedSender<Action>) -> Self {
         Self {
-            client,
-            config,
+            client: ApiClient::new(profile.clone()),
             profile,
             results,
         }
-    }
-
-    pub fn uses_env_token(&self) -> bool {
-        self.client.uses_env_token()
     }
 
     pub fn fetch(&self, generation: u64, request: Request) {
@@ -87,11 +74,10 @@ impl Worker {
     /// On success the key is saved to this profile, on disk and in memory.
     pub fn log_in(&self, generation: u64, credentials: Credentials) {
         let client = self.client.clone();
-        let config = self.config.clone();
         let profile = self.profile.clone();
         let results = self.results.clone();
         tokio::spawn(async move {
-            let result = log_in_and_store(&client, &config, &profile, &credentials)
+            let result = log_in_and_store(&client, &profile, &credentials)
                 .await
                 .map_err(|error| FetchError::from_error(&error));
             let _ = results.send(Action::LoggedIn { generation, result });
@@ -103,7 +89,7 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
     Ok(match request {
         Request::CurrentUser => Payload::CurrentUser(client.current_user().await?),
         Request::KeyScope => Payload::KeyScope(client.current_key().await?),
-        Request::Projects => Payload::Projects(client.project_summaries().await?),
+        Request::Projects => Payload::Projects(client.projects().await?),
         Request::ProjectDetail(id) => Payload::ProjectDetail(client.project_detail(id).await?),
         Request::UnassignedServices => Payload::UnassignedServices(client.services().await?),
         Request::Service(id) => Payload::Service(Box::new(client.service(id).await?)),
@@ -111,6 +97,7 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
             client
                 .deployments(id, 1)
                 .await?
+                .deployments
                 .into_iter()
                 .next()
                 .map(Box::new),
@@ -119,7 +106,9 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
         Request::MetricsHistory(id) => {
             Payload::MetricsHistory(client.service_metrics_history(id, 3600).await?)
         }
-        Request::Deployments(id) => Payload::Deployments(client.deployments(id, 10).await?),
+        Request::Deployments(id) => {
+            Payload::Deployments(client.deployments(id, 10).await?.deployments)
+        }
         Request::Deployment(service, deployment) => {
             Payload::Deployment(Box::new(client.deployment(service, deployment).await?))
         }
@@ -130,38 +119,43 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
 
 async fn send_mutation(client: &ApiClient, mutation: Mutation) -> Result<()> {
     match mutation {
-        Mutation::Deploy { service_id } => client.trigger_deployment(service_id).await,
-        Mutation::Restart { service_id } => client.service_command(service_id, "restart").await,
-        Mutation::StartService { service_id } => client.service_command(service_id, "start").await,
-        Mutation::StopService { service_id } => client.service_command(service_id, "stop").await,
+        Mutation::Deploy { service_id } => client.trigger_deployment(service_id).await.map(drop),
+        Mutation::Restart { service_id } => {
+            client
+                .service_command(service_id, ServiceCommand::Restart)
+                .await
+        }
+        Mutation::StartService { service_id } => {
+            client
+                .service_command(service_id, ServiceCommand::Start)
+                .await
+        }
+        Mutation::StopService { service_id } => {
+            client
+                .service_command(service_id, ServiceCommand::Stop)
+                .await
+        }
         Mutation::Rollback {
             service_id,
             deployment_id,
-        } => client.roll_back(service_id, deployment_id).await,
-        Mutation::StartDatabase { database_id } => {
-            client.database_command(database_id, "start").await
-        }
-        Mutation::StopDatabase { database_id } => {
-            client.database_command(database_id, "stop").await
-        }
+        } => client.roll_back(service_id, deployment_id).await.map(drop),
+        Mutation::StartDatabase { database_id } => client
+            .database_command(database_id, DatabaseCommand::Start)
+            .await
+            .map(drop),
+        Mutation::StopDatabase { database_id } => client
+            .database_command(database_id, DatabaseCommand::Stop)
+            .await
+            .map(drop),
     }
 }
 
 async fn log_in_and_store(
     client: &ApiClient,
-    config: &Arc<Mutex<Config>>,
-    profile: &str,
+    profile: &ActiveProfile,
     credentials: &Credentials,
 ) -> Result<String> {
     let outcome = client.log_in(credentials).await?;
-    let api_key = outcome.api_key;
-    config::update_profile(profile, |saved| saved.api_key = Some(api_key.clone()))?;
-    config
-        .lock()
-        .unwrap()
-        .profiles
-        .entry(profile.to_string())
-        .or_default()
-        .api_key = Some(api_key);
+    profile.store_api_key(outcome.api_key)?;
     Ok(outcome.email)
 }

@@ -80,12 +80,7 @@ pub async fn list(
     format: OutputFormat,
 ) -> Result<()> {
     let service_id = client.resolve_service_id(service).await?;
-    let data: DeploymentList = client
-        .get(&format!(
-            "/api/v1/web-services/{}/deployments?limit={}",
-            service_id, limit
-        ))
-        .await?;
+    let data: DeploymentList = client.deployments(service_id, u32::from(limit)).await?;
 
     render(format, &data, || {
         print_table(data.deployments.iter().map(DeploymentRow::from).collect());
@@ -109,12 +104,7 @@ pub async fn rollback(
     let service_id = client.resolve_service_id(service).await?;
     let target_id = client.resolve_deployment_id(service_id, deployment).await?;
 
-    let rollback: Deployment = client
-        .post_empty(&format!(
-            "/api/v1/web-services/{}/deployments/{}/rollback",
-            service_id, target_id
-        ))
-        .await?;
+    let rollback = client.roll_back(service_id, target_id).await?;
 
     render(format, &rollback, || {
         println!(

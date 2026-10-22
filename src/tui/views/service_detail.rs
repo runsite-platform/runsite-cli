@@ -328,34 +328,34 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
             format!(
                 "{}follow {}{}wrap {}",
                 theme.separator(),
-                on_off(logs.follow),
+                on_off(logs.follow()),
                 theme.separator(),
-                on_off(logs.wrap)
+                on_off(logs.wrap())
             ),
             theme.muted(),
         ),
     ];
-    if logs.editing_search || !logs.search.is_empty() {
-        let cursor = if logs.editing_search {
+    if logs.editing_search() || !logs.search().is_empty() {
+        let cursor = if logs.editing_search() {
             theme.cursor()
         } else {
             ""
         };
         info.push(Span::styled(
-            format!("{}/{}{}", theme.separator(), logs.search, cursor),
+            format!("{}/{}{}", theme.separator(), logs.search(), cursor),
             theme.accent(),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(info)), info_area);
 
     let lines = logs.lines();
-    let body_area = match (&logs.status_message, lines.is_empty()) {
+    let body_area = match (logs.status_message(), lines.is_empty()) {
         // Keep the lines, but say why no new ones arrive (e.g. after a restart).
         (Some(message), false) => {
             let [message_area, rest] =
                 Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
             frame.render_widget(
-                Paragraph::new(Span::styled(message.clone(), theme.warning())),
+                Paragraph::new(Span::styled(message.to_string(), theme.warning())),
                 message_area,
             );
             rest
@@ -364,8 +364,8 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
     };
     if lines.is_empty() {
         let message = logs
-            .status_message
-            .clone()
+            .status_message()
+            .map(str::to_string)
             .unwrap_or_else(|| format!("Waiting for logs{}", theme.ellipsis()));
         frame.render_widget(
             Paragraph::new(Span::styled(message, theme.muted())).wrap(Wrap { trim: true }),
@@ -376,17 +376,17 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
 
     let width = body_area.width as usize;
     let height = body_area.height as usize;
-    let end = lines.len() - logs.scroll_from_bottom.min(lines.len());
-    let offset = if logs.wrap { 0 } else { logs.horizontal_offset };
+    let end = lines.len() - logs.scroll_from_bottom().min(lines.len());
+    let offset = logs.horizontal_offset();
     let rows_of = |index: usize| {
         let line = log_line(
             &lines[index],
             logs.is_match(index),
-            logs.current_match == Some(index),
+            logs.is_current_match(index),
             offset,
             theme,
         );
-        if logs.wrap {
+        if logs.wrap() {
             wrap_line(line, width)
         } else {
             vec![line]

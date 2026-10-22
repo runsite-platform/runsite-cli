@@ -4,8 +4,6 @@ use super::app::{App, Screen};
 use super::detail::{DeploymentView, DetailTab, ServiceDetailState};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-const HORIZONTAL_STEP: usize = 8;
-
 impl App {
     /// Rows of log or build output a PgUp/PgDn moves.
     fn page_size(&self) -> usize {
@@ -25,16 +23,10 @@ impl App {
         };
         let logs = &mut detail.logs;
         match key.code {
-            KeyCode::Esc if logs.search.is_empty() => logs.editing_search = false,
-            KeyCode::Esc => {
-                logs.search.clear();
-                logs.current_match = None;
-            }
+            KeyCode::Esc => logs.escape_search(),
             KeyCode::Enter => logs.apply_search(),
-            KeyCode::Backspace => {
-                logs.search.pop();
-            }
-            KeyCode::Char(character) => logs.search.push(character),
+            KeyCode::Backspace => logs.erase_search(),
+            KeyCode::Char(character) => logs.type_search(character),
             _ => {}
         }
     }
@@ -55,7 +47,7 @@ impl App {
             return;
         }
 
-        let horizontal_scroll = detail.tab == DetailTab::Logs && !detail.logs.wrap;
+        let horizontal_scroll = detail.tab == DetailTab::Logs && !detail.logs.wrap();
         let next_tab = match key.code {
             KeyCode::Char(digit @ '1'..='3') => DetailTab::from_digit(digit),
             KeyCode::Tab => Some(detail.tab.next()),
@@ -94,25 +86,18 @@ fn handle_logs_key(detail: &mut ServiceDetailState, key: KeyEvent, page: usize) 
         KeyCode::PageDown => logs.scroll_down(page),
         KeyCode::Char('g') => logs.jump_to_top(),
         KeyCode::Char('G') => logs.follow_tail(),
-        KeyCode::Char('f') => {
-            if logs.follow {
-                logs.follow = false;
-            } else {
-                logs.follow_tail();
-            }
-        }
-        KeyCode::Char('w') => {
-            logs.wrap = !logs.wrap;
-            logs.horizontal_offset = 0;
-        }
+        KeyCode::Char('f') => logs.toggle_follow(),
+        KeyCode::Char('w') => logs.toggle_wrap(),
         KeyCode::Char('c') => logs.clear_view(),
-        KeyCode::Char('/') => logs.editing_search = true,
+        KeyCode::Char('/') => logs.open_search(),
         KeyCode::Char('n') => logs.step_match(true),
         KeyCode::Char('N') => logs.step_match(false),
-        KeyCode::Left if !logs.wrap => {
-            logs.horizontal_offset = logs.horizontal_offset.saturating_sub(HORIZONTAL_STEP)
+        KeyCode::Left => {
+            logs.scroll_sideways(false);
         }
-        KeyCode::Right if !logs.wrap => logs.horizontal_offset += HORIZONTAL_STEP,
+        KeyCode::Right => {
+            logs.scroll_sideways(true);
+        }
         _ => {}
     }
 }

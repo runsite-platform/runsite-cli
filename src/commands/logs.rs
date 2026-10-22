@@ -10,9 +10,9 @@ pub async fn tail(
     format: OutputFormat,
 ) -> Result<()> {
     let id = client.resolve_service_id(service).await?;
-    let data: ContainerLogs = client
-        .get(&format!("/api/v1/web-services/{}/logs?tail={}", id, lines))
-        .await?;
+    let data = ContainerLogs {
+        logs: client.service_logs(id, lines, None).await?,
+    };
 
     render(format, &data, || {
         if data.logs.trim().is_empty() {

@@ -1,3 +1,5 @@
+use super::actions::DeploymentActivity;
+use super::status::deployment_in_progress;
 use crate::api::{
     DeploymentInfo, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
 };
@@ -67,6 +69,17 @@ fn matches_filter(name: &str, filter: &str) -> bool {
 }
 
 impl DashboardState {
+    /// Read from the fast `deployments?limit=1` poll of `service_id`.
+    pub fn deployment_activity(&self, service_id: Uuid) -> DeploymentActivity {
+        match self.latest_deployments.get(&service_id) {
+            None => DeploymentActivity::Unchecked,
+            Some(Some(latest)) if deployment_in_progress(&latest.status) => {
+                DeploymentActivity::Running
+            }
+            Some(_) => DeploymentActivity::Idle,
+        }
+    }
+
     pub fn new(preferred_project: Option<Uuid>) -> Self {
         Self {
             selected_project: preferred_project.map(ProjectChoice::Project),

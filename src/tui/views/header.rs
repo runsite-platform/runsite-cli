@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::update::CURRENT_VERSION as VERSION;
 
 fn identity(app: &App, theme: &Theme) -> String {
     let session = &app.session;

@@ -24,7 +24,7 @@ fn dashboard_on_resources() -> App {
 fn confirm_prompt(app: &App) -> String {
     match &app.overlay {
         Some(Overlay::Confirm(confirm)) => {
-            format!("{} {}{}", confirm.verb, confirm.target, confirm.suffix)
+            format!("{} {}{}", confirm.verb(), confirm.target, confirm.suffix)
         }
         other => panic!("expected a confirm modal, got {other:?}"),
     }

@@ -1,22 +1,35 @@
+mod databases;
+mod deployments;
+mod env;
 mod login;
-mod resources;
+mod projects;
+mod services;
+#[cfg(test)]
+mod test_support;
 mod types;
+mod users;
+pub use databases::{DatabaseCommand, DatabaseEngine};
 pub use login::Credentials;
+pub use services::ServiceCommand;
 pub use types::*;
 
-use crate::config::Config;
+use crate::config::ActiveProfile;
 use crate::error::ApiError;
 use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use uuid::Uuid;
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A request that hangs longer than this fails instead of freezing the CLI or a TUI poll.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// True when `service` sits in `project_id`, or when no project is selected.
-pub fn belongs_to_project(service: &WebService, project_id: Option<&str>) -> bool {
+pub fn belongs_to_project(service: &WebService, project_id: Option<Uuid>) -> bool {
     match project_id {
-        Some(pid) => service.project_id.map(|id| id.to_string()).as_deref() == Some(pid),
+        Some(selected) => service.project_id == Some(selected),
         None => true,
     }
 }
@@ -86,77 +99,40 @@ fn describe_structured_detail(detail: &Value) -> Option<String> {
     Some(message)
 }
 
-fn match_id_prefix(ids: &[Uuid], prefix: &str) -> Result<Uuid> {
-    let prefix = prefix.to_lowercase();
-    if prefix.len() < 4 {
-        return Err(anyhow!(
-            "deployment ID '{}' is too short, use at least 4 characters",
-            prefix
-        ));
-    }
-
-    let matched: Vec<_> = ids
-        .iter()
-        .filter(|id| id.to_string().starts_with(&prefix))
-        .collect();
-    match matched.len() {
-        0 => Err(anyhow!(
-            "deployment '{}' not found among the last 100 deployments",
-            prefix
-        )),
-        1 => Ok(*matched[0]),
-        _ => Err(anyhow!(
-            "deployment ID '{}' is ambiguous, use more characters",
-            prefix
-        )),
-    }
-}
-
 #[derive(Clone)]
 pub struct ApiClient {
     http: Client,
-    pub base_url: String,
-    config: Arc<Mutex<Config>>,
-    profile_name: String,
+    base_url: String,
+    profile: ActiveProfile,
 }
 
 impl ApiClient {
-    pub fn new(base_url: String, config: Arc<Mutex<Config>>, profile_name: String) -> Self {
+    /// Talks to the profile's API URL with its current token, so a key stored
+    /// on `profile` later is used by this client too.
+    pub fn new(profile: ActiveProfile) -> Self {
         // The login flow authenticates with httpOnly cookies: /api/auth/login sets
         // `access_token`, which the follow-up /api/api-keys call must carry.
         let http = Client::builder()
             .cookie_store(true)
+            .user_agent(crate::USER_AGENT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .expect("failed to build HTTP client");
         Self {
             http,
-            base_url: base_url.trim_end_matches('/').to_string(),
-            config,
-            profile_name,
+            base_url: profile.api_url().trim_end_matches('/').to_string(),
+            profile,
         }
     }
 
     /// Project selected with `runsite project use`, if any.
-    pub fn current_project_id(&self) -> Option<String> {
-        self.config
-            .lock()
-            .unwrap()
-            .profiles
-            .get(&self.profile_name)
-            .and_then(|p| p.current_project_id.clone())
-    }
-
-    /// True when `RUNSITE_API_TOKEN` overrides the profile's saved key.
-    pub fn uses_env_token(&self) -> bool {
-        std::env::var("RUNSITE_API_TOKEN").is_ok()
+    pub fn current_project_id(&self) -> Option<Uuid> {
+        self.profile.current_project_id()
     }
 
     fn auth_token(&self) -> Option<String> {
-        if let Ok(token) = std::env::var("RUNSITE_API_TOKEN") {
-            return Some(token);
-        }
-        let cfg = self.config.lock().unwrap();
-        cfg.profiles.get(&self.profile_name)?.api_key.clone()
+        self.profile.token()
     }
 
     pub async fn mint_api_key(&self, name: &str) -> Result<String> {
@@ -200,7 +176,7 @@ impl ApiClient {
         }
     }
 
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
         let resp = self
             .http
@@ -211,7 +187,7 @@ impl ApiClient {
         self.handle_response(resp).await
     }
 
-    pub async fn post<T: DeserializeOwned>(
+    async fn post<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &impl serde::Serialize,
@@ -227,11 +203,11 @@ impl ApiClient {
         self.handle_response(resp).await
     }
 
-    pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.post(path, &serde_json::json!({})).await
     }
 
-    pub async fn put<T: DeserializeOwned>(
+    async fn put<T: DeserializeOwned>(
         &self,
         path: &str,
         body: &impl serde::Serialize,
@@ -247,7 +223,7 @@ impl ApiClient {
         self.handle_response(resp).await
     }
 
-    pub async fn delete_req(&self, path: &str) -> Result<()> {
+    async fn delete_req(&self, path: &str) -> Result<()> {
         let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
         let resp = self
             .http
@@ -286,161 +262,6 @@ impl ApiClient {
 
         self.handle_response(resp).await
     }
-
-    // Resolve service name to UUID
-    pub async fn resolve_service_id(&self, name_or_id: Option<&str>) -> Result<Uuid> {
-        if let Some(val) = name_or_id {
-            if let Ok(id) = Uuid::parse_str(val) {
-                return Ok(id);
-            }
-        }
-
-        let list: WebServiceList = self.get("/api/v1/web-services").await?;
-
-        let project_id = self.current_project_id();
-
-        let candidates: Vec<_> = list
-            .web_services
-            .iter()
-            .filter(|s| belongs_to_project(s, project_id.as_deref()))
-            .collect();
-
-        if let Some(name) = name_or_id {
-            let matched: Vec<_> = candidates.iter().filter(|s| s.name == name).collect();
-            match matched.len() {
-                0 => Err(self.service_not_found_error(name, &list).await),
-                1 => Ok(matched[0].id),
-                _ => {
-                    let ids: Vec<_> = matched
-                        .iter()
-                        .map(|s| format!("  {} ({})", s.name, s.id))
-                        .collect();
-                    Err(anyhow!(
-                        "multiple services named '{}'. Use ID instead:\n{}",
-                        name,
-                        ids.join("\n")
-                    ))
-                }
-            }
-        } else {
-            match candidates.len() {
-                0 => Err(anyhow!("no services found")),
-                1 => Ok(candidates[0].id),
-                _ => {
-                    let list: Vec<_> = candidates
-                        .iter()
-                        .map(|s| format!("  {} ({})", s.name, s.id))
-                        .collect();
-                    Err(anyhow!(
-                        "multiple services found. Specify a service name:\n{}",
-                        list.join("\n")
-                    ))
-                }
-            }
-        }
-    }
-
-    pub async fn resolve_project_id(&self, name_or_id: &str) -> Result<Uuid> {
-        if let Ok(id) = Uuid::parse_str(name_or_id) {
-            return Ok(id);
-        }
-
-        let data: ProjectList = self.get("/api/v1/projects").await?;
-        let matched: Vec<_> = data
-            .projects
-            .iter()
-            .filter(|p| p.name == name_or_id)
-            .collect();
-
-        match matched.len() {
-            0 => Err(anyhow!("project '{}' not found", name_or_id)),
-            1 => Ok(matched[0].id),
-            _ => Err(anyhow!("multiple projects named '{}'", name_or_id)),
-        }
-    }
-
-    /// Accepts a full deployment ID or the short prefix printed by `deployments list`.
-    pub async fn resolve_deployment_id(
-        &self,
-        service_id: Uuid,
-        id_or_prefix: &str,
-    ) -> Result<Uuid> {
-        if let Ok(id) = Uuid::parse_str(id_or_prefix) {
-            return Ok(id);
-        }
-
-        let data: DeploymentList = self
-            .get(&format!(
-                "/api/v1/web-services/{}/deployments?limit=100",
-                service_id
-            ))
-            .await?;
-        let ids: Vec<Uuid> = data.deployments.iter().map(|d| d.id).collect();
-        match_id_prefix(&ids, id_or_prefix)
-    }
-
-    /// Build the error for a name that resolved to nothing in the current project.
-    ///
-    /// `service list` and this resolver used to disagree: the list showed every
-    /// service on the account while the resolver only accepted ones in the
-    /// selected project, so a name printed by the list could still be rejected
-    /// here. The list now filters too, and this points at the owning project
-    /// whenever the name exists somewhere else.
-    async fn service_not_found_error(&self, name: &str, list: &WebServiceList) -> anyhow::Error {
-        let elsewhere: Vec<_> = list
-            .web_services
-            .iter()
-            .filter(|s| s.name == name)
-            .collect();
-
-        let Some(service) = elsewhere.first() else {
-            return anyhow!("service '{}' not found", name);
-        };
-
-        let owner = match service.project_id {
-            Some(project_id) => self.project_name(project_id).await,
-            None => None,
-        };
-
-        match owner {
-            Some(project_name) => anyhow!(
-                "service '{}' belongs to project '{}'. Switch with: runsite project use \"{}\"",
-                name,
-                project_name,
-                project_name
-            ),
-            None => anyhow!(
-                "service '{}' is not in the current project. See all services with: runsite service list --all",
-                name
-            ),
-        }
-    }
-
-    /// Best-effort project name lookup; falls back to `None` when the extra
-    /// request fails, so error reporting never masks the original problem.
-    pub async fn project_name(&self, project_id: Uuid) -> Option<String> {
-        let list: ProjectList = self.get("/api/v1/projects").await.ok()?;
-        list.projects
-            .into_iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.name)
-    }
-
-    // WebSocket URL helper: replaces http(s) scheme with ws(s)
-    // Dormant under API-key auth: WebSocket routes are JWT-only. Kept for future rewiring.
-    #[allow(dead_code)]
-    pub fn ws_url(&self, path: &str) -> String {
-        let base = self
-            .base_url
-            .replacen("https://", "wss://", 1)
-            .replacen("http://", "ws://", 1);
-        format!("{}{}", base, path)
-    }
-
-    #[allow(dead_code)]
-    pub fn ws_token(&self) -> Option<String> {
-        self.auth_token()
-    }
 }
 
 #[cfg(test)]
@@ -460,22 +281,26 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_in_the_api_url_is_dropped() {
-        let client = ApiClient::new(
-            "https://api.runsite.app/".to_string(),
-            Arc::new(Mutex::new(Config::default())),
-            "default".to_string(),
-        );
+        let profile = crate::config::Profile {
+            api_url: "https://api.runsite.app/".to_string(),
+            ..Default::default()
+        };
+        let client = ApiClient::new(ActiveProfile::in_memory("default", profile, None));
         assert_eq!(client.base_url, "https://api.runsite.app");
     }
 
     const PROJECT: &str = "ca83c4a9-1517-4fe3-93aa-bbdab4eaee23";
     const OTHER_PROJECT: &str = "8d5b5e8e-2348-4a29-8c05-bcfa1e599ef2";
 
+    fn selected() -> Option<Uuid> {
+        Some(Uuid::parse_str(PROJECT).unwrap())
+    }
+
     #[test]
     fn a_service_in_the_selected_project_belongs_to_it() {
         assert!(belongs_to_project(
             &service("api", Some(PROJECT)),
-            Some(PROJECT)
+            selected()
         ));
     }
 
@@ -483,7 +308,7 @@ mod tests {
     fn a_service_from_another_project_is_filtered_out() {
         assert!(!belongs_to_project(
             &service("api", Some(OTHER_PROJECT)),
-            Some(PROJECT)
+            selected()
         ));
     }
 
@@ -491,16 +316,6 @@ mod tests {
     fn every_service_is_listed_when_no_project_is_selected() {
         assert!(belongs_to_project(&service("api", Some(PROJECT)), None));
         assert!(belongs_to_project(&service("api", None), None));
-    }
-
-    const DEPLOYMENT: &str = "3f2a1b4c-0000-4000-8000-000000000001";
-    const SIBLING_DEPLOYMENT: &str = "3f2a9999-0000-4000-8000-000000000002";
-
-    fn deployment_ids() -> Vec<Uuid> {
-        vec![
-            Uuid::parse_str(DEPLOYMENT).unwrap(),
-            Uuid::parse_str(SIBLING_DEPLOYMENT).unwrap(),
-        ]
     }
 
     #[test]
@@ -584,25 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn a_unique_prefix_resolves_to_its_deployment() {
-        let resolved = match_id_prefix(&deployment_ids(), "3F2A1B4C").unwrap();
-        assert_eq!(resolved.to_string(), DEPLOYMENT);
-    }
-
-    #[test]
-    fn an_ambiguous_prefix_is_rejected() {
-        let error = match_id_prefix(&deployment_ids(), "3f2a").unwrap_err();
-        assert!(error.to_string().contains("ambiguous"));
-    }
-
-    #[test]
-    fn an_unknown_or_too_short_prefix_is_rejected() {
-        assert!(match_id_prefix(&deployment_ids(), "ffff").is_err());
-        assert!(match_id_prefix(&deployment_ids(), "3f").is_err());
-    }
-
-    #[test]
     fn a_service_without_a_project_is_filtered_out_under_a_selection() {
-        assert!(!belongs_to_project(&service("api", None), Some(PROJECT)));
+        assert!(!belongs_to_project(&service("api", None), selected()));
     }
 }

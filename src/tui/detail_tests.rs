@@ -180,7 +180,7 @@ fn a_400_from_logs_becomes_the_tab_message() {
         },
     );
     assert_eq!(
-        detail(&app).logs.status_message.as_deref(),
+        detail(&app).logs.status_message(),
         Some("Unable to fetch logs: container is starting")
     );
     assert!(app.toast.is_none());
@@ -193,11 +193,11 @@ fn the_filter_keys_on_the_logs_tab_are_text_while_searching() {
     for character in "q2".chars() {
         update(&mut app, char_key(character));
     }
-    assert_eq!(detail(&app).logs.search, "q2");
+    assert_eq!(detail(&app).logs.search(), "q2");
     assert_eq!(detail(&app).tab, DetailTab::Logs);
     assert!(app.exit.is_none());
     update(&mut app, key(KeyCode::Enter));
-    assert!(!detail(&app).logs.editing_search);
+    assert!(!detail(&app).logs.editing_search());
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn arrows_scroll_logs_sideways_only_with_wrap_off() {
     update(&mut app, char_key('w'));
     update(&mut app, key(KeyCode::Right));
     assert_eq!(detail(&app).tab, DetailTab::Logs);
-    assert_eq!(detail(&app).logs.horizontal_offset, 8);
+    assert_eq!(detail(&app).logs.horizontal_offset(), 8);
     update(&mut app, key(KeyCode::Tab));
     assert_eq!(detail(&app).tab, DetailTab::Deploys);
 }

@@ -1,9 +1,8 @@
-use crate::api::{ApiClient, Project, ProjectCreate, ProjectList};
+use crate::api::{ApiClient, Project, ProjectCreate};
 use crate::cli::OutputFormat;
-use crate::config::{self, Config};
+use crate::config::ActiveProfile;
 use crate::output::{print_table, render};
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
 use tabled::Tabled;
 
 #[derive(Tabled)]
@@ -27,9 +26,9 @@ impl From<&Project> for ProjectRow {
 }
 
 pub async fn list(client: &ApiClient, format: OutputFormat) -> Result<()> {
-    let data: ProjectList = client.get("/api/v1/projects").await?;
-    render(format, &data.projects, || {
-        print_table(data.projects.iter().map(ProjectRow::from).collect())
+    let projects: Vec<Project> = client.projects().await?;
+    render(format, &projects, || {
+        print_table(projects.iter().map(ProjectRow::from).collect())
     })
 }
 
@@ -43,7 +42,7 @@ pub async fn create(
         name: name.to_string(),
         description,
     };
-    let project: Project = client.post("/api/v1/projects", &body).await?;
+    let project = client.create_project(&body).await?;
     render(format, &project, || {
         println!("Created project {} ({})", project.name, project.id);
         println!("Select it with: runsite project use {}", project.id);
@@ -52,34 +51,20 @@ pub async fn create(
 
 pub async fn use_project(
     client: &ApiClient,
-    config: Arc<Mutex<Config>>,
-    profile_name: &str,
+    profile: &ActiveProfile,
     project_name_or_id: &str,
 ) -> Result<()> {
     let project_id = client.resolve_project_id(project_name_or_id).await?;
-
-    {
-        let mut cfg = config.lock().unwrap();
-        let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
-        profile.current_project_id = Some(project_id.to_string());
-        config::save_profile(&cfg, profile_name)?;
-    }
-
+    profile.select_project(project_id)?;
     println!("Switched to project {}", project_name_or_id);
     Ok(())
 }
 
-pub fn unset_project(config: Arc<Mutex<Config>>, profile_name: &str) -> Result<()> {
-    {
-        let mut cfg = config.lock().unwrap();
-        let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
-        if profile.current_project_id.take().is_none() {
-            println!("No project selected.");
-            return Ok(());
-        }
-        config::save_profile(&cfg, profile_name)?;
+pub fn unset_project(profile: &ActiveProfile) -> Result<()> {
+    if profile.clear_project()? {
+        println!("Project context cleared.");
+    } else {
+        println!("No project selected.");
     }
-
-    println!("Project context cleared.");
     Ok(())
 }

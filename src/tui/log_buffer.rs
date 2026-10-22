@@ -5,6 +5,7 @@
 //! Lines in the overlap are de-duplicated by `(timestamp, text)` with a
 //! multiset, which keeps genuinely repeated lines.
 
+use super::action::FetchError;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::collections::{HashMap, VecDeque};
 
@@ -14,6 +15,8 @@ pub const FOLLOW_TAIL: u32 = 1000;
 pub const OVERLAP_SECONDS: i64 = 5;
 /// A Logs tab hidden longer than this starts over from a fresh tail.
 pub const RESTART_AFTER_SECONDS: i64 = 30;
+/// Columns one ← or → moves while wrap is off.
+const HORIZONTAL_STEP: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogQuery {
@@ -49,16 +52,16 @@ pub struct LogBuffer {
     cursor: Option<DateTime<Utc>>,
     recent: HashMap<LineKey, usize>,
     /// Shown instead of lines, e.g. "Service is not ready yet…".
-    pub status_message: Option<String>,
-    pub last_polled: Option<DateTime<Utc>>,
-    pub follow: bool,
-    pub wrap: bool,
+    status_message: Option<String>,
+    last_polled: Option<DateTime<Utc>>,
+    follow: bool,
+    wrap: bool,
     /// Lines scrolled up from the bottom while not following.
-    pub scroll_from_bottom: usize,
-    pub horizontal_offset: usize,
-    pub search: String,
-    pub editing_search: bool,
-    pub current_match: Option<usize>,
+    scroll_from_bottom: usize,
+    horizontal_offset: usize,
+    search: String,
+    editing_search: bool,
+    current_match: Option<usize>,
     /// Query of the request in flight; other replies are stale.
     in_flight: Option<LogQuery>,
 }
@@ -88,7 +91,45 @@ impl LogBuffer {
         &self.lines
     }
 
-    pub fn next_query(&self) -> LogQuery {
+    /// Why no new lines arrive, e.g. "Service is not ready yet…".
+    pub fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
+    pub fn follow(&self) -> bool {
+        self.follow
+    }
+
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    pub fn scroll_from_bottom(&self) -> usize {
+        self.scroll_from_bottom
+    }
+
+    /// Columns cut from the left of every line; always 0 while wrapping.
+    pub fn horizontal_offset(&self) -> usize {
+        if self.wrap {
+            0
+        } else {
+            self.horizontal_offset
+        }
+    }
+
+    pub fn search(&self) -> &str {
+        &self.search
+    }
+
+    pub fn editing_search(&self) -> bool {
+        self.editing_search
+    }
+
+    pub fn is_current_match(&self, index: usize) -> bool {
+        self.current_match == Some(index)
+    }
+
+    fn next_query(&self) -> LogQuery {
         match self.cursor {
             None => LogQuery {
                 tail: FIRST_TAIL,
@@ -108,13 +149,30 @@ impl LogBuffer {
         query
     }
 
-    /// True when `query` is the request this buffer is waiting for.
-    pub fn finish_fetch(&mut self, query: LogQuery) -> bool {
-        if self.in_flight == Some(query) {
-            self.in_flight = None;
-            true
-        } else {
-            false
+    /// Take in the reply to `query`. A reply to any other request, such as
+    /// one sent before the screen was reopened, would scramble the order and
+    /// is dropped.
+    pub fn receive(&mut self, query: LogQuery, body: &str, now: DateTime<Utc>) {
+        if self.in_flight != Some(query) {
+            return;
+        }
+        self.in_flight = None;
+        self.ingest(body, query, now);
+    }
+
+    /// True when `error` says why logs are unreadable right now ("Unable to
+    /// fetch logs…" comes back as 400): a state of the service, shown in place
+    /// of new lines, not an error.
+    pub fn fetch_failed(&mut self, error: &FetchError) -> bool {
+        match error {
+            FetchError::Rejected {
+                status: 400,
+                message,
+            } => {
+                self.status_message = Some(message.clone());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -132,7 +190,7 @@ impl LogBuffer {
         }
     }
 
-    pub fn ingest(&mut self, body: &str, query: LogQuery, now: DateTime<Utc>) {
+    fn ingest(&mut self, body: &str, query: LogQuery, now: DateTime<Utc>) {
         self.last_polled = Some(now);
         if body.trim().is_empty() {
             // Logs are readable again; only the buffer stays as it was.
@@ -232,6 +290,57 @@ impl LogBuffer {
     pub fn follow_tail(&mut self) {
         self.follow = true;
         self.scroll_from_bottom = 0;
+    }
+
+    /// `f`: stop following where the view is, or jump back to the newest line.
+    pub fn toggle_follow(&mut self) {
+        if self.follow {
+            self.follow = false;
+        } else {
+            self.follow_tail();
+        }
+    }
+
+    pub fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.horizontal_offset = 0;
+    }
+
+    /// `←` / `→` while wrap is off; returns false when wrapping, so the key
+    /// can mean something else.
+    pub fn scroll_sideways(&mut self, right: bool) -> bool {
+        if self.wrap {
+            return false;
+        }
+        self.horizontal_offset = if right {
+            self.horizontal_offset + HORIZONTAL_STEP
+        } else {
+            self.horizontal_offset.saturating_sub(HORIZONTAL_STEP)
+        };
+        true
+    }
+
+    /// `/`: start typing a search.
+    pub fn open_search(&mut self) {
+        self.editing_search = true;
+    }
+
+    pub fn type_search(&mut self, character: char) {
+        self.search.push(character);
+    }
+
+    pub fn erase_search(&mut self) {
+        self.search.pop();
+    }
+
+    /// `Esc` in the search box: clear the text, or close the box once empty.
+    pub fn escape_search(&mut self) {
+        if self.search.is_empty() {
+            self.editing_search = false;
+        } else {
+            self.search.clear();
+            self.current_match = None;
+        }
     }
 
     fn matches(&self, index: usize) -> bool {
@@ -389,19 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_awaited_reply_is_accepted() {
-        let mut buffer = LogBuffer::default();
-        let first = buffer.start_fetch();
-        let stale = LogQuery {
-            tail: 1000,
-            since: Some(BASE),
-        };
-        assert!(!buffer.finish_fetch(stale));
-        assert!(buffer.finish_fetch(first));
-        assert!(!buffer.finish_fetch(first), "a duplicate reply is dropped");
-    }
-
-    #[test]
     fn a_response_below_the_tail_has_no_gap() {
         let mut buffer = LogBuffer::default();
         poll(&mut buffer, "2026-09-23T10:00:01Z a\n");
@@ -522,5 +618,65 @@ mod tests {
         assert_eq!(buffer.current_match, Some(0));
         buffer.step_match(true);
         assert_eq!(buffer.current_match, Some(2));
+    }
+
+    #[test]
+    fn only_the_reply_in_flight_is_taken_in() {
+        let mut buffer = LogBuffer::default();
+        let first = buffer.start_fetch();
+        let now = DateTime::from_timestamp(1_790_157_600, 0).unwrap();
+        let stale = LogQuery {
+            tail: FOLLOW_TAIL,
+            since: Some(1),
+        };
+        buffer.receive(stale, "2026-09-23T10:00:01Z old\n", now);
+        assert!(buffer.lines().is_empty());
+
+        buffer.receive(first, "2026-09-23T10:00:01Z hello\n", now);
+        assert_eq!(buffer.lines().len(), 1);
+        buffer.receive(first, "2026-09-23T10:00:02Z twice\n", now);
+        assert_eq!(buffer.lines().len(), 1, "a reply is taken in once");
+    }
+
+    #[test]
+    fn a_400_is_shown_as_the_reason_and_other_errors_are_not() {
+        let mut buffer = LogBuffer::default();
+        let unreadable = FetchError::Rejected {
+            status: 400,
+            message: "Unable to fetch logs".to_string(),
+        };
+        assert!(buffer.fetch_failed(&unreadable));
+        assert_eq!(buffer.status_message(), Some("Unable to fetch logs"));
+
+        let server_error = FetchError::Rejected {
+            status: 422,
+            message: "bad tail".to_string(),
+        };
+        assert!(!buffer.fetch_failed(&server_error));
+        assert_eq!(buffer.status_message(), Some("Unable to fetch logs"));
+    }
+
+    #[test]
+    fn sideways_scrolling_only_works_without_wrap() {
+        let mut buffer = LogBuffer::default();
+        assert!(!buffer.scroll_sideways(true));
+        buffer.toggle_wrap();
+        assert!(buffer.scroll_sideways(true));
+        assert!(buffer.scroll_sideways(true));
+        assert_eq!(buffer.horizontal_offset(), 16);
+        buffer.toggle_wrap();
+        assert_eq!(buffer.horizontal_offset(), 0, "wrapping resets the offset");
+    }
+
+    #[test]
+    fn escape_clears_the_search_then_closes_it() {
+        let mut buffer = LogBuffer::default();
+        buffer.open_search();
+        buffer.type_search('x');
+        buffer.escape_search();
+        assert!(buffer.editing_search());
+        assert_eq!(buffer.search(), "");
+        buffer.escape_search();
+        assert!(!buffer.editing_search());
     }
 }

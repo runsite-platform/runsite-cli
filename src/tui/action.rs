@@ -1,3 +1,4 @@
+use super::actions::ActionKey;
 use super::log_buffer::LogQuery;
 use crate::api::{
     ApiKeyIdentity, Credentials, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint,
@@ -57,15 +58,26 @@ pub enum Mutation {
 
 impl Mutation {
     /// The action key that asks for this mutation.
-    pub fn key(&self) -> char {
+    pub fn action_key(&self) -> ActionKey {
         match self {
-            Mutation::Deploy { .. } => 'D',
-            Mutation::Restart { .. } => 'R',
-            Mutation::Rollback { .. } => 'B',
+            Mutation::Deploy { .. } => ActionKey::Deploy,
+            Mutation::Restart { .. } => ActionKey::Restart,
+            Mutation::Rollback { .. } => ActionKey::Rollback,
             Mutation::StartService { .. }
             | Mutation::StopService { .. }
             | Mutation::StartDatabase { .. }
-            | Mutation::StopDatabase { .. } => 'S',
+            | Mutation::StopDatabase { .. } => ActionKey::StartStop,
+        }
+    }
+
+    /// Opens the confirm prompt: "Restart **api**?".
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Mutation::Deploy { .. } => "Deploy",
+            Mutation::Restart { .. } => "Restart",
+            Mutation::StartService { .. } | Mutation::StartDatabase { .. } => "Start",
+            Mutation::StopService { .. } | Mutation::StopDatabase { .. } => "Stop",
+            Mutation::Rollback { .. } => "Roll back",
         }
     }
 
@@ -250,7 +262,6 @@ pub enum Effect {
     ListProfiles,
     SwitchProfile {
         profile: String,
-        api_url: String,
     },
     Exit,
 }

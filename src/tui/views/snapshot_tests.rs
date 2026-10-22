@@ -421,7 +421,12 @@ fn a_log_message_stays_visible_above_existing_lines() {
         },
     );
     if let crate::tui::app::Screen::ServiceDetail(detail) = &mut app.screen {
-        detail.logs.status_message = Some("Service is not ready yet".to_string());
+        detail
+            .logs
+            .fetch_failed(&crate::tui::action::FetchError::Rejected {
+                status: 400,
+                message: "Service is not ready yet".to_string(),
+            });
     }
     let screen = render_text(&app, &unicode(), 120, 40);
     assert!(screen.contains("Service is not ready yet"));

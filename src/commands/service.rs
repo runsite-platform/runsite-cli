@@ -1,13 +1,11 @@
 use crate::api::{
-    belongs_to_project, ApiClient, EnvVarCreate, WebService, WebServiceCreate, WebServiceDetail,
-    WebServiceList,
+    belongs_to_project, ApiClient, EnvVarCreate, ServiceCommand, WebService, WebServiceCreate,
+    WebServiceDetail,
 };
 use crate::cli::{OutputFormat, ServiceCreateArgs};
 use crate::output::{format::colorize_status, format::format_time, print_table, render};
 use anyhow::{anyhow, Result};
-use serde_json::Value;
 use tabled::Tabled;
-use uuid::Uuid;
 
 #[derive(Tabled)]
 struct ServiceRow {
@@ -33,16 +31,15 @@ impl From<&WebService> for ServiceRow {
 }
 
 pub async fn list(client: &ApiClient, all: bool, format: OutputFormat) -> Result<()> {
-    let data: WebServiceList = client.get("/api/v1/web-services").await?;
+    let every_service: Vec<WebService> = client.services().await?;
     let project_id = if all {
         None
     } else {
         client.current_project_id()
     };
-    let services: Vec<&WebService> = data
-        .web_services
+    let services: Vec<&WebService> = every_service
         .iter()
-        .filter(|s| belongs_to_project(s, project_id.as_deref()))
+        .filter(|s| belongs_to_project(s, project_id))
         .collect();
 
     render(format, &services, || {
@@ -83,12 +80,7 @@ pub async fn create(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let project_id = match &args.project {
-        Some(project) => Some(client.resolve_project_id(project).await?),
-        None => client
-            .current_project_id()
-            .and_then(|id| Uuid::parse_str(&id).ok()),
-    };
+    let project_id = client.target_project_id(args.project.as_deref()).await?;
 
     let body = WebServiceCreate {
         name: args.name.clone(),
@@ -109,7 +101,7 @@ pub async fn create(
         env_vars,
     };
 
-    let created: WebServiceDetail = client.post("/api/v1/web-services", &body).await?;
+    let created = client.create_service(&body).await?;
 
     render(format, &created, || {
         println!("Service {} created.", created.name);
@@ -124,7 +116,7 @@ pub async fn create(
 
 pub async fn status(client: &ApiClient, service: Option<&str>, format: OutputFormat) -> Result<()> {
     let id = client.resolve_service_id(service).await?;
-    let detail: WebServiceDetail = client.get(&format!("/api/v1/web-services/{}", id)).await?;
+    let detail: WebServiceDetail = client.service(id).await?;
 
     render(format, &detail, || {
         println!("Name:      {}", detail.name);
@@ -144,27 +136,21 @@ pub async fn status(client: &ApiClient, service: Option<&str>, format: OutputFor
 
 pub async fn start(client: &ApiClient, service: Option<&str>) -> Result<()> {
     let id = client.resolve_service_id(service).await?;
-    let _: Value = client
-        .post_empty(&format!("/api/v1/web-services/{}/deploy", id))
-        .await?;
+    client.service_command(id, ServiceCommand::Start).await?;
     println!("Service starting.");
     Ok(())
 }
 
 pub async fn stop(client: &ApiClient, service: Option<&str>) -> Result<()> {
     let id = client.resolve_service_id(service).await?;
-    let _: Value = client
-        .post_empty(&format!("/api/v1/web-services/{}/stop", id))
-        .await?;
+    client.service_command(id, ServiceCommand::Stop).await?;
     println!("Service stopped.");
     Ok(())
 }
 
 pub async fn restart(client: &ApiClient, service: Option<&str>) -> Result<()> {
     let id = client.resolve_service_id(service).await?;
-    let _: Value = client
-        .post_empty(&format!("/api/v1/web-services/{}/restart", id))
-        .await?;
+    client.service_command(id, ServiceCommand::Restart).await?;
     println!("Service restarted.");
     Ok(())
 }

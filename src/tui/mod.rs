@@ -1,5 +1,5 @@
 mod action;
-mod action_keys;
+mod action_gate;
 mod actions;
 mod app;
 mod dashboard;
@@ -7,6 +7,7 @@ mod detail;
 mod detail_keys;
 mod log_buffer;
 mod login;
+mod poll_plan;
 mod poller;
 mod status;
 mod theme;
@@ -22,7 +23,7 @@ mod detail_tests;
 #[cfg(test)]
 mod fixtures;
 
-use crate::config::{self, Config};
+use crate::config::{self, ActiveProfile, Config};
 use action::{Action, Effect, ProfileEntry};
 use anyhow::{bail, Result};
 use app::{App, ExitReason, Session};
@@ -30,7 +31,6 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{Event, EventStream, KeyEventKind};
 use std::io::IsTerminal;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use theme::Theme;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -70,7 +70,6 @@ fn profile_entries(config: &Config) -> Vec<ProfileEntry> {
 }
 
 struct Runtime {
-    config: Arc<Mutex<Config>>,
     worker: Worker,
     results: UnboundedSender<Action>,
 }
@@ -103,12 +102,12 @@ impl Runtime {
                         .unwrap_or_default();
                     let _ = self.results.send(Action::ProfilesListed(entries));
                 }
-                Effect::SwitchProfile { profile, api_url } => {
-                    if let Ok(fresh) = config::read_current() {
-                        *self.config.lock().unwrap() = fresh;
+                Effect::SwitchProfile { profile } => {
+                    // The picker read this profile from the file a moment ago,
+                    // so a failed reload is not worth interrupting the session.
+                    if let Ok(active) = ActiveProfile::load(Some(&profile)) {
+                        self.worker = Worker::new(active, self.results.clone());
                     }
-                    self.worker =
-                        Worker::new(self.config.clone(), profile, api_url, self.results.clone());
                 }
                 Effect::Exit => return false,
             }
@@ -144,35 +143,18 @@ async fn termination_signal() {
     }
 }
 
-pub async fn run(config: Arc<Mutex<Config>>, profile_name: String) -> Result<()> {
-    let profile = config
-        .lock()
-        .unwrap()
-        .profiles
-        .get(&profile_name)
-        .cloned()
-        .unwrap_or_default();
-    let preferred_project = profile
-        .current_project_id
-        .as_deref()
-        .and_then(|id| Uuid::parse_str(id).ok());
-
-    let (results, mut incoming) = mpsc::unbounded_channel();
-    let worker = Worker::new(
-        config.clone(),
-        profile_name.clone(),
-        profile.api_url.clone(),
-        results.clone(),
-    );
-    let env_token = worker.uses_env_token();
+pub async fn run(profile: ActiveProfile) -> Result<()> {
+    let preferred_project = profile.current_project_id();
     let session = Session {
-        profile: profile_name,
-        api_url: profile.api_url,
-        env_token,
-        has_credentials: env_token || profile.api_key.is_some(),
+        profile: profile.name(),
+        api_url: profile.api_url(),
+        env_token: profile.uses_env_token(),
+        has_credentials: profile.is_authenticated(),
         user: None,
         key_scope: None,
     };
+    let (results, mut incoming) = mpsc::unbounded_channel();
+    let worker = Worker::new(profile, results.clone());
 
     let theme = Theme::detect();
     let mut terminal = ratatui::try_init()?;
@@ -189,11 +171,7 @@ pub async fn run(config: Arc<Mutex<Config>>, profile_name: String) -> Result<()>
         Utc::now(),
         (size.width, size.height),
     );
-    let mut runtime = Runtime {
-        config,
-        worker,
-        results,
-    };
+    let mut runtime = Runtime { worker, results };
 
     let outcome = event_loop(&mut terminal, &mut app, &mut runtime, &theme, &mut incoming).await;
     ratatui::restore();

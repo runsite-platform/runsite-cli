@@ -1,4 +1,6 @@
+mod active_profile;
 mod types;
+pub use active_profile::ActiveProfile;
 pub use types::{Config, Profile};
 
 use anyhow::{Context, Result};
@@ -57,36 +59,9 @@ fn write_to(path: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
-pub fn load(profile_override: Option<&str>) -> Result<(Config, String)> {
-    let mut config = read_from(&config_path()?)?;
-
-    let active = profile_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| config.current_profile.clone());
-
-    if active != config.current_profile {
-        config.current_profile = active.clone();
-    }
-
-    if !config.profiles.contains_key(&config.current_profile) {
-        config
-            .profiles
-            .insert(config.current_profile.clone(), Profile::default());
-    }
-
-    Ok((config, active))
-}
-
 /// The config exactly as it is on disk right now, without any `--profile` override.
 pub fn read_current() -> Result<Config> {
     read_from(&config_path()?)
-}
-
-/// Write the profile `name` from `config` to disk, keeping everything else in
-/// the file as it is now. A `--profile` override is never persisted.
-pub fn save_profile(config: &Config, name: &str) -> Result<()> {
-    let profile = config.profiles.get(name).cloned().unwrap_or_default();
-    update_profile(name, |saved| *saved = profile)
 }
 
 /// Change one profile without touching anything else in the file.
@@ -94,16 +69,24 @@ pub fn save_profile(config: &Config, name: &str) -> Result<()> {
 /// The file is re-read first, so edits made meanwhile by another `runsite`
 /// process (a login, `project use`) survive. `current_profile` is never changed.
 pub fn update_profile(name: &str, change: impl FnOnce(&mut Profile)) -> Result<()> {
-    update_profile_at(&config_path()?, name, change)
+    update_profile_at(&config_path()?, name, change).map(drop)
 }
 
-fn update_profile_at(path: &Path, name: &str, change: impl FnOnce(&mut Profile)) -> Result<()> {
+/// Returns the profile as it was saved.
+fn update_profile_at(
+    path: &Path,
+    name: &str,
+    change: impl FnOnce(&mut Profile),
+) -> Result<Profile> {
     let _guard = UPDATE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut config = read_from(path)?;
-    change(config.profiles.entry(name.to_string()).or_default());
-    write_to(path, &config)
+    let profile = config.profiles.entry(name.to_string()).or_default();
+    change(profile);
+    let saved = profile.clone();
+    write_to(path, &config)?;
+    Ok(saved)
 }
 
 #[cfg(test)]
