@@ -120,21 +120,18 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
 async fn send_mutation(client: &ApiClient, mutation: Mutation) -> Result<()> {
     match mutation {
         Mutation::Deploy { service_id } => client.trigger_deployment(service_id).await.map(drop),
-        Mutation::Restart { service_id } => {
-            client
-                .service_command(service_id, ServiceCommand::Restart)
-                .await
-        }
-        Mutation::StartService { service_id } => {
-            client
-                .service_command(service_id, ServiceCommand::Start)
-                .await
-        }
-        Mutation::StopService { service_id } => {
-            client
-                .service_command(service_id, ServiceCommand::Stop)
-                .await
-        }
+        Mutation::Restart { service_id } => client
+            .service_command(service_id, ServiceCommand::Restart)
+            .await
+            .map(drop),
+        Mutation::StartService { service_id } => client
+            .service_command(service_id, ServiceCommand::Start)
+            .await
+            .map(drop),
+        Mutation::StopService { service_id } => client
+            .service_command(service_id, ServiceCommand::Stop)
+            .await
+            .map(drop),
         Mutation::Rollback {
             service_id,
             deployment_id,

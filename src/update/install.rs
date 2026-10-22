@@ -5,12 +5,12 @@ use super::{
     CURRENT_VERSION,
 };
 use crate::cli::OutputFormat;
-use crate::output;
+use crate::output::{emit, Report};
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::io::{Cursor, Read};
+use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -30,6 +30,47 @@ struct UpdateStatus {
     update_available: bool,
 }
 
+impl Report for UpdateStatus {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        if self.update_available {
+            writeln!(
+                out,
+                "Update available: v{} → v{}\nRun `runsite upgrade` to install it.",
+                self.current_version, self.latest_version
+            )
+        } else {
+            writeln!(out, "runsite v{} is up to date", self.current_version)
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct UpgradeResult {
+    previous_version: String,
+    current_version: String,
+    updated: bool,
+}
+
+impl Report for UpgradeResult {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        if self.updated {
+            writeln!(
+                out,
+                "{} runsite v{} → v{}",
+                "Updated".green(),
+                self.previous_version,
+                self.current_version
+            )
+        } else {
+            writeln!(
+                out,
+                "runsite v{} is already the latest version",
+                self.current_version
+            )
+        }
+    }
+}
+
 pub async fn upgrade(check_only: bool, format: OutputFormat) -> Result<()> {
     let client = http_client(Duration::from_secs(120))?;
     let release = ReleaseSource::github().latest(&client).await?;
@@ -44,20 +85,18 @@ pub async fn upgrade(check_only: bool, format: OutputFormat) -> Result<()> {
             latest_version: latest_version.clone(),
             update_available,
         };
-        return output::render(format, &status, || {
-            if update_available {
-                println!(
-                    "Update available: v{CURRENT_VERSION} → v{latest_version}\nRun `runsite upgrade` to install it."
-                );
-            } else {
-                println!("runsite v{CURRENT_VERSION} is up to date");
-            }
-        });
+        return emit(format, &status);
     }
 
     if !update_available {
-        println!("runsite v{CURRENT_VERSION} is already the latest version");
-        return Ok(());
+        return emit(
+            format,
+            &UpgradeResult {
+                previous_version: CURRENT_VERSION.to_string(),
+                current_version: CURRENT_VERSION.to_string(),
+                updated: false,
+            },
+        );
     }
 
     let current_exe = std::env::current_exe()
@@ -84,11 +123,14 @@ pub async fn upgrade(check_only: bool, format: OutputFormat) -> Result<()> {
         }
     })?;
 
-    println!(
-        "{} runsite v{CURRENT_VERSION} → v{latest_version}",
-        "Updated".green()
-    );
-    Ok(())
+    emit(
+        format,
+        &UpgradeResult {
+            previous_version: CURRENT_VERSION.to_string(),
+            current_version: latest_version,
+            updated: true,
+        },
+    )
 }
 
 /// A downloaded, verified binary that ran once, waiting in a temporary

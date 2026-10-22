@@ -29,5 +29,17 @@ pub fn format_age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
 
 pub fn format_time(time: &Option<DateTime<Utc>>) -> String {
     time.map(|then| format_age(Utc::now(), then))
-        .unwrap_or_else(|| "—".to_string())
+        .unwrap_or_else(|| PLACEHOLDER.to_string())
+}
+
+/// Shown in text output where a value is missing.
+pub const PLACEHOLDER: &str = "—";
+
+pub fn or_placeholder(value: Option<&str>) -> String {
+    value.unwrap_or(PLACEHOLDER).to_string()
+}
+
+/// The first 8 characters of an ID, as `deployments list` prints it.
+pub fn short_id(id: &uuid::Uuid) -> String {
+    id.to_string()[..8].to_string()
 }

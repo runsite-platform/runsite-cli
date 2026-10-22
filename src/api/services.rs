@@ -1,10 +1,9 @@
 use super::{
     belongs_to_project, ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ResourceMetrics,
-    WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
+    ServiceRuntimeStatus, WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
 };
 use anyhow::{anyhow, Result};
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,7 +14,7 @@ pub enum ServiceCommand {
 }
 
 impl ServiceCommand {
-    fn route(self) -> &'static str {
+    pub fn route(self) -> &'static str {
         match self {
             Self::Start => "start",
             Self::Stop => "stop",
@@ -79,14 +78,17 @@ impl ApiClient {
 
     /// `POST …/start` only starts a stopped service; a rebuild is
     /// `trigger_deployment`.
-    pub async fn service_command(&self, service_id: Uuid, command: ServiceCommand) -> Result<()> {
-        self.post_empty::<Value>(&format!(
+    pub async fn service_command(
+        &self,
+        service_id: Uuid,
+        command: ServiceCommand,
+    ) -> Result<ServiceRuntimeStatus> {
+        self.post_empty(&format!(
             "/api/v1/web-services/{}/{}",
             service_id,
             command.route()
         ))
         .await
-        .map(|_| ())
     }
 
     /// A service ID, or a name looked up in the selected project. With no
@@ -302,10 +304,12 @@ mod tests {
     async fn service_commands_post_to_their_route() {
         let server = MockServer::start().await;
         for route in ["restart", "start", "stop"] {
-            expect_post(
+            expect_request(
                 &server,
+                "POST",
                 &format!("/api/v1/web-services/{SERVICE_ID}/{route}"),
                 200,
+                serde_json::json!({"status": "deploying", "container_id": null, "host_port": null}),
             )
             .await;
         }

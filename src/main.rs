@@ -11,12 +11,13 @@ mod update;
 pub const USER_AGENT: &str = concat!("runsite-cli/", env!("CARGO_PKG_VERSION"));
 
 use anyhow::Result;
-use api::DatabaseCommand;
+use api::{DatabaseCommand, ServiceCommand};
 use clap::Parser;
 use cli::{
     Cli, Commands, ContextCommands, DbCommands, DeploymentCommands, EnvCommands, OutputFormat,
     ProjectCommands, ServiceCommands,
 };
+use output::emit;
 
 /// Rust masks SIGPIPE at startup, so writing to a closed pipe raises an IO
 /// error that `println!` turns into a panic. Restoring the default handler
@@ -89,130 +90,147 @@ async fn run(cli: Cli) -> Result<()> {
             tui::run(profile).await?;
         }
 
-        Commands::Login { token } => {
-            commands::auth::login(&client, &profile, token.as_deref()).await?;
-        }
+        Commands::Login { token } => emit(
+            format,
+            &commands::auth::login(&client, &profile, token.as_deref()).await?,
+        )?,
 
-        Commands::Logout => {
-            commands::auth::logout(&profile)?;
-        }
+        Commands::Logout => emit(format, &commands::auth::logout(&profile)?)?,
 
-        Commands::Whoami => {
-            commands::auth::whoami(&client, format).await?;
-        }
+        Commands::Whoami => emit(format, &commands::auth::whoami(&client).await?)?,
 
         Commands::Service(sub) => match sub {
-            ServiceCommands::List { all } => commands::service::list(&client, all, format).await?,
+            ServiceCommands::List { all } => {
+                emit(format, &commands::service::list(&client, all).await?)?
+            }
             ServiceCommands::Create(args) => {
-                commands::service::create(&client, &args, format).await?
+                emit(format, &commands::service::create(&client, &args).await?)?
             }
-            ServiceCommands::Status { service } => {
-                commands::service::status(&client, service.as_deref(), format).await?
-            }
-            ServiceCommands::Start { service } => {
-                commands::service::start(&client, service.as_deref()).await?
-            }
-            ServiceCommands::Stop { service } => {
-                commands::service::stop(&client, service.as_deref()).await?
-            }
-            ServiceCommands::Restart { service } => {
-                commands::service::restart(&client, service.as_deref()).await?
-            }
+            ServiceCommands::Status { service } => emit(
+                format,
+                &commands::service::status(&client, service.as_deref()).await?,
+            )?,
+            ServiceCommands::Start { service } => emit(
+                format,
+                &commands::service::run_command(&client, service.as_deref(), ServiceCommand::Start)
+                    .await?,
+            )?,
+            ServiceCommands::Stop { service } => emit(
+                format,
+                &commands::service::run_command(&client, service.as_deref(), ServiceCommand::Stop)
+                    .await?,
+            )?,
+            ServiceCommands::Restart { service } => emit(
+                format,
+                &commands::service::run_command(
+                    &client,
+                    service.as_deref(),
+                    ServiceCommand::Restart,
+                )
+                .await?,
+            )?,
         },
 
-        Commands::Deploy { service, watch } => {
-            commands::deploy::trigger(&client, service.as_deref(), watch).await?;
-        }
+        Commands::Deploy { service, watch } => emit(
+            format,
+            &commands::deploy::trigger(&client, service.as_deref(), watch).await?,
+        )?,
 
         Commands::Deployments(sub) => match sub {
-            DeploymentCommands::List { service, limit } => {
-                commands::deployments::list(&client, service.as_deref(), limit, format).await?
-            }
+            DeploymentCommands::List { service, limit } => emit(
+                format,
+                &commands::deployments::list(&client, service.as_deref(), limit).await?,
+            )?,
             DeploymentCommands::Rollback {
                 deployment,
                 service,
-            } => {
-                commands::deployments::rollback(&client, service.as_deref(), &deployment, format)
-                    .await?
-            }
+            } => emit(
+                format,
+                &commands::deployments::rollback(&client, service.as_deref(), &deployment).await?,
+            )?,
         },
 
-        Commands::Logs { service, tail } => {
-            commands::logs::tail(&client, service.as_deref(), tail, format).await?;
-        }
+        Commands::Logs { service, tail } => emit(
+            format,
+            &commands::logs::tail(&client, service.as_deref(), tail).await?,
+        )?,
 
-        Commands::Shell { service } => {
-            commands::shell::interactive(&client, service.as_deref()).await?;
-        }
+        Commands::Shell { service } => commands::shell::interactive(service.as_deref())?,
 
-        Commands::Run { service, command } => {
-            commands::shell::run(&client, service.as_deref(), &command).await?;
-        }
+        Commands::Run { service, command } => commands::shell::run(service.as_deref(), &command)?,
 
         Commands::Env(sub) => match sub {
-            EnvCommands::List { service } => {
-                commands::env::list(&client, service.as_deref(), format).await?
-            }
-            EnvCommands::Set { service, vars } => {
-                commands::env::set(&client, service.as_deref(), &vars).await?
-            }
-            EnvCommands::Delete { service, keys } => {
-                commands::env::delete(&client, service.as_deref(), &keys).await?
-            }
+            EnvCommands::List { service } => emit(
+                format,
+                &commands::env::list(&client, service.as_deref()).await?,
+            )?,
+            EnvCommands::Set { service, vars } => emit(
+                format,
+                &commands::env::set(&client, service.as_deref(), &vars).await?,
+            )?,
+            EnvCommands::Delete { service, keys } => emit(
+                format,
+                &commands::env::delete(&client, service.as_deref(), &keys).await?,
+            )?,
         },
 
         Commands::Project(sub) => match sub {
-            ProjectCommands::List => commands::project::list(&client, format).await?,
-            ProjectCommands::Create { name, description } => {
-                commands::project::create(&client, &name, description, format).await?
-            }
-            ProjectCommands::Use { project } => {
-                commands::project::use_project(&client, &profile, &project).await?
-            }
-            ProjectCommands::Unset => commands::project::unset_project(&profile)?,
+            ProjectCommands::List => emit(format, &commands::project::list(&client).await?)?,
+            ProjectCommands::Create { name, description } => emit(
+                format,
+                &commands::project::create(&client, &name, description).await?,
+            )?,
+            ProjectCommands::Use { project } => emit(
+                format,
+                &commands::project::use_project(&client, &profile, &project).await?,
+            )?,
+            ProjectCommands::Unset => emit(format, &commands::project::unset_project(&profile)?)?,
         },
 
         Commands::Db(sub) => match sub {
-            DbCommands::List => commands::database::list(&client, format).await?,
+            DbCommands::List => emit(format, &commands::database::list(&client).await?)?,
             DbCommands::Create {
                 name,
                 plan,
                 engine,
                 project,
-            } => {
-                commands::database::create(
-                    &client,
-                    &name,
-                    &plan,
-                    engine,
-                    project.as_deref(),
-                    format,
-                )
-                .await?
-            }
-            DbCommands::Start { database } => {
-                commands::database::change_state(&client, &database, DatabaseCommand::Start, format)
-                    .await?
-            }
-            DbCommands::Stop { database } => {
-                commands::database::change_state(&client, &database, DatabaseCommand::Stop, format)
-                    .await?
-            }
-            DbCommands::Delete { database, yes } => {
-                commands::database::delete(&client, &database, yes).await?
-            }
-            DbCommands::Connect { database, service } => {
-                commands::database::connect(&client, &database, service.as_deref(), format).await?
-            }
+            } => emit(
+                format,
+                &commands::database::create(&client, &name, &plan, engine, project.as_deref())
+                    .await?,
+            )?,
+            DbCommands::Start { database } => emit(
+                format,
+                &commands::database::change_state(&client, &database, DatabaseCommand::Start)
+                    .await?,
+            )?,
+            DbCommands::Stop { database } => emit(
+                format,
+                &commands::database::change_state(&client, &database, DatabaseCommand::Stop)
+                    .await?,
+            )?,
+            DbCommands::Delete { database, yes } => emit(
+                format,
+                &commands::database::delete(&client, &database, yes).await?,
+            )?,
+            DbCommands::Connect { database, service } => emit(
+                format,
+                &commands::database::connect(&client, &database, service.as_deref()).await?,
+            )?,
         },
 
-        Commands::Plans { service_type } => {
-            commands::database::plans(&client, service_type, format).await?
-        }
+        Commands::Plans { service_type } => emit(
+            format,
+            &commands::database::plans(&client, service_type).await?,
+        )?,
 
         Commands::Context(sub) => match sub {
-            ContextCommands::Show => commands::context::show(&client, &profile).await?,
-            ContextCommands::SetUrl { url } => commands::context::set_url(&profile, &url)?,
+            ContextCommands::Show => {
+                emit(format, &commands::context::show(&client, &profile).await?)?
+            }
+            ContextCommands::SetUrl { url } => {
+                emit(format, &commands::context::set_url(&profile, &url)?)?
+            }
         },
 
         Commands::Upgrade { .. } => unreachable!("handled before the config is loaded"),

@@ -5,7 +5,7 @@ mod login;
 mod projects;
 mod services;
 #[cfg(test)]
-mod test_support;
+pub mod test_support;
 mod types;
 mod users;
 pub use databases::{DatabaseCommand, DatabaseEngine};

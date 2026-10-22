@@ -1,8 +1,11 @@
 use crate::api::{ApiClient, Deployment, DeploymentList};
-use crate::cli::OutputFormat;
-use crate::output::{format::colorize_status, format::format_time, print_table, render};
+use crate::output::format::{colorize_status, format_time, or_placeholder, short_id, PLACEHOLDER};
+use crate::output::{write_table, Report};
 use anyhow::Result;
+use serde::Serialize;
+use std::io::{self, Write};
 use tabled::Tabled;
+use uuid::Uuid;
 
 const COMMIT_MESSAGE_WIDTH: usize = 50;
 
@@ -30,21 +33,14 @@ impl From<&Deployment> for DeploymentRow {
         }
 
         Self {
-            id: short_id(deployment),
+            id: short_id(&deployment.id),
             status,
-            branch: deployment.branch.clone().unwrap_or_else(|| "—".to_string()),
+            branch: or_placeholder(deployment.branch.as_deref()),
             commit: describe_commit(deployment),
-            trigger: deployment
-                .trigger_type
-                .clone()
-                .unwrap_or_else(|| "—".to_string()),
+            trigger: or_placeholder(deployment.trigger_type.as_deref()),
             created: format_time(&deployment.created_at),
         }
     }
-}
-
-fn short_id(deployment: &Deployment) -> String {
-    deployment.id.to_string()[..8].to_string()
 }
 
 fn describe_commit(deployment: &Deployment) -> String {
@@ -66,53 +62,75 @@ fn describe_commit(deployment: &Deployment) -> String {
     };
 
     match (sha.is_empty(), message.is_empty()) {
-        (true, true) => "—".to_string(),
+        (true, true) => PLACEHOLDER.to_string(),
         (false, true) => sha,
         (true, false) => message,
         (false, false) => format!("{} {}", sha, message),
     }
 }
 
-pub async fn list(
-    client: &ApiClient,
-    service: Option<&str>,
-    limit: u8,
-    format: OutputFormat,
-) -> Result<()> {
-    let service_id = client.resolve_service_id(service).await?;
-    let data: DeploymentList = client.deployments(service_id, u32::from(limit)).await?;
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Deployments(pub DeploymentList);
 
-    render(format, &data, || {
-        print_table(data.deployments.iter().map(DeploymentRow::from).collect());
-        let total = usize::try_from(data.total).unwrap_or_default();
-        if total > data.deployments.len() {
-            println!(
+impl Report for Deployments {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let list = &self.0;
+        write_table(
+            out,
+            list.deployments.iter().map(DeploymentRow::from).collect(),
+        )?;
+        let total = usize::try_from(list.total).unwrap_or_default();
+        if total > list.deployments.len() {
+            writeln!(
+                out,
                 "Showing {} of {} deployments. Use --limit to see more.",
-                data.deployments.len(),
+                list.deployments.len(),
                 total
-            );
+            )?;
         }
-    })
+        Ok(())
+    }
+}
+
+/// Serialized as the new deployment that redeploys `target_id`.
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct RollbackStarted {
+    pub deployment: Deployment,
+    #[serde(skip)]
+    pub target_id: Uuid,
+}
+
+impl Report for RollbackStarted {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "Rolling back to deployment {}: new deployment {} is {}.",
+            short_id(&self.target_id),
+            short_id(&self.deployment.id),
+            colorize_status(&self.deployment.status)
+        )
+    }
+}
+
+pub async fn list(client: &ApiClient, service: Option<&str>, limit: u8) -> Result<Deployments> {
+    let service_id = client.resolve_service_id(service).await?;
+    Ok(Deployments(
+        client.deployments(service_id, u32::from(limit)).await?,
+    ))
 }
 
 pub async fn rollback(
     client: &ApiClient,
     service: Option<&str>,
     deployment: &str,
-    format: OutputFormat,
-) -> Result<()> {
+) -> Result<RollbackStarted> {
     let service_id = client.resolve_service_id(service).await?;
     let target_id = client.resolve_deployment_id(service_id, deployment).await?;
-
-    let rollback = client.roll_back(service_id, target_id).await?;
-
-    render(format, &rollback, || {
-        println!(
-            "Rolling back to deployment {}: new deployment {} is {}.",
-            &target_id.to_string()[..8],
-            short_id(&rollback),
-            colorize_status(&rollback.status)
-        );
+    Ok(RollbackStarted {
+        deployment: client.roll_back(service_id, target_id).await?,
+        target_id,
     })
 }
 
@@ -151,6 +169,17 @@ mod tests {
         let described = describe_commit(&deployment(None, Some(&long_message)));
         assert_eq!(described.chars().count(), COMMIT_MESSAGE_WIDTH);
         assert!(described.ends_with('…'));
+    }
+
+    #[test]
+    fn more_deployments_than_shown_points_to_limit() {
+        let report = Deployments(DeploymentList {
+            deployments: vec![deployment(None, None)],
+            total: 5,
+        });
+        let text = crate::output::render_text(&report);
+        assert!(text.contains("3f2a1b4c"));
+        assert!(text.contains("Showing 1 of 5 deployments"));
     }
 
     #[test]

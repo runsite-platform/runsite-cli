@@ -1,6 +1,5 @@
-use super::{ApiClient, BulkEnvVars, EnvVar, EnvVarList};
+use super::{ApiClient, BulkEnvVars, EnvVar, EnvVarBulkResult, EnvVarList};
 use anyhow::Result;
-use serde_json::Value;
 use uuid::Uuid;
 
 impl ApiClient {
@@ -12,13 +11,16 @@ impl ApiClient {
     }
 
     /// Creates or updates every variable in `body` in one request.
-    pub async fn set_env_vars(&self, service_id: Uuid, body: &BulkEnvVars) -> Result<()> {
-        self.put::<Value>(
+    pub async fn set_env_vars(
+        &self,
+        service_id: Uuid,
+        body: &BulkEnvVars,
+    ) -> Result<EnvVarBulkResult> {
+        self.put(
             &format!("/api/v1/web-services/{}/env/bulk", service_id),
             body,
         )
         .await
-        .map(|_| ())
     }
 
     pub async fn delete_env_var(&self, service_id: Uuid, variable_id: Uuid) -> Result<()> {
@@ -65,7 +67,12 @@ mod tests {
             "PUT",
             &format!("/api/v1/web-services/{SERVICE_ID}/env/bulk"),
             200,
-            serde_json::json!({}),
+            serde_json::json!({
+                "environment_variables": [
+                    {"id": "3f2a1b4c-0000-4000-8000-0000000000e1", "key": "PORT", "value": "8080", "is_secret": false}
+                ],
+                "total": 1, "created": 1, "updated": 0, "deleted": 0
+            }),
         )
         .await;
 
@@ -77,10 +84,12 @@ mod tests {
                 is_secret: false,
             }],
         };
-        client_for(&server)
+        let result = client_for(&server)
             .set_env_vars(uuid(SERVICE_ID), &body)
             .await
             .unwrap();
+        assert_eq!(result.environment_variables[0].key, "PORT");
+        assert_eq!(result.created, 1);
     }
 
     #[tokio::test]

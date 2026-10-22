@@ -19,12 +19,21 @@ pub fn client_for(server: &MockServer) -> ApiClient {
 
 /// A client whose profile has `project_id` selected with `runsite project use`.
 pub fn client_in_project(server: &MockServer, project_id: Option<&str>) -> ApiClient {
+    session_in_project(server, project_id).0
+}
+
+/// A client and the in-memory profile it reads, for commands that take both.
+pub fn session_in_project(
+    server: &MockServer,
+    project_id: Option<&str>,
+) -> (ApiClient, ActiveProfile) {
     let profile = Profile {
         api_url: server.uri(),
         api_key: Some(TEST_KEY.to_string()),
         current_project_id: project_id.map(str::to_string),
     };
-    ApiClient::new(ActiveProfile::in_memory("default", profile, None))
+    let active = ActiveProfile::in_memory("default", profile, None);
+    (ApiClient::new(active.clone()), active)
 }
 
 pub async fn serve(server: &MockServer, route: &str, body: serde_json::Value) {
@@ -57,8 +66,4 @@ pub async fn expect_request(
         .expect(1)
         .mount(server)
         .await;
-}
-
-pub async fn expect_post(server: &MockServer, route: &str, status: u16) {
-    expect_request(server, "POST", route, status, serde_json::json!({})).await;
 }

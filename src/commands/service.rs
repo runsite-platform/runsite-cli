@@ -1,11 +1,16 @@
+use super::parse_key_value;
 use crate::api::{
-    belongs_to_project, ApiClient, EnvVarCreate, ServiceCommand, WebService, WebServiceCreate,
-    WebServiceDetail,
+    belongs_to_project, ApiClient, EnvVarCreate, ServiceCommand, ServiceRuntimeStatus, WebService,
+    WebServiceCreate, WebServiceDetail,
 };
-use crate::cli::{OutputFormat, ServiceCreateArgs};
-use crate::output::{format::colorize_status, format::format_time, print_table, render};
-use anyhow::{anyhow, Result};
+use crate::cli::ServiceCreateArgs;
+use crate::output::format::{colorize_status, format_time, or_placeholder};
+use crate::output::{write_table, Report};
+use anyhow::{bail, Result};
+use serde::Serialize;
+use std::io::{self, Write};
 use tabled::Tabled;
+use uuid::Uuid;
 
 #[derive(Tabled)]
 struct ServiceRow {
@@ -20,48 +25,121 @@ struct ServiceRow {
 }
 
 impl From<&WebService> for ServiceRow {
-    fn from(s: &WebService) -> Self {
+    fn from(service: &WebService) -> Self {
         Self {
-            name: s.name.clone(),
-            status: colorize_status(s.status.as_deref().unwrap_or("unknown")),
-            url: s.url.clone().unwrap_or_else(|| "—".to_string()),
-            updated: format_time(&s.updated_at),
+            name: service.name.clone(),
+            status: colorize_status(service.status.as_deref().unwrap_or("unknown")),
+            url: or_placeholder(service.url.as_deref()),
+            updated: format_time(&service.updated_at),
         }
     }
 }
 
-pub async fn list(client: &ApiClient, all: bool, format: OutputFormat) -> Result<()> {
+/// Serialized as a bare array, as `service list --output json` always was.
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Services {
+    pub services: Vec<WebService>,
+    #[serde(skip)]
+    pub filtered_by_project: bool,
+}
+
+impl Report for Services {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        write_table(out, self.services.iter().map(ServiceRow::from).collect())?;
+        if self.services.is_empty() && self.filtered_by_project {
+            writeln!(
+                out,
+                "No services in the current project. Use --all to list every service."
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct ServiceCreated(pub WebServiceDetail);
+
+impl Report for ServiceCreated {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let created = &self.0;
+        writeln!(out, "Service {} created.", created.name)?;
+        writeln!(out, "ID:     {}", created.id)?;
+        writeln!(out, "Status: {}", colorize_status(&created.status))?;
+        if let Some(url) = &created.url {
+            writeln!(out, "URL:    {}", url)?;
+        }
+        writeln!(out, "\nDeploy it with: runsite deploy {}", created.id)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct ServiceStatus(pub WebServiceDetail);
+
+impl Report for ServiceStatus {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let detail = &self.0;
+        writeln!(out, "Name:      {}", detail.name)?;
+        writeln!(out, "Status:    {}", colorize_status(&detail.status))?;
+        writeln!(out, "URL:       {}", or_placeholder(detail.url.as_deref()))?;
+        if let Some(repo) = &detail.github_repo_full_name {
+            let branch = or_placeholder(detail.github_branch.as_deref());
+            writeln!(out, "Repo:      {} ({})", repo, branch)?;
+        }
+        if let (Some(min), Some(max)) = (detail.min_instances, detail.max_instances) {
+            writeln!(out, "Instances: {}–{}", min, max)?;
+        }
+        writeln!(out, "Updated:   {}", format_time(&detail.updated_at))?;
+        writeln!(out, "ID:        {}", detail.id)
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ServiceActionAccepted {
+    pub service_id: Uuid,
+    pub action: &'static str,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl Report for ServiceActionAccepted {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let summary = match self.action {
+            "start" => "Service starting.",
+            "stop" => "Service stopped.",
+            _ => "Service restarted.",
+        };
+        writeln!(out, "{}", summary)
+    }
+}
+
+pub async fn list(client: &ApiClient, all: bool) -> Result<Services> {
     let every_service: Vec<WebService> = client.services().await?;
     let project_id = if all {
         None
     } else {
         client.current_project_id()
     };
-    let services: Vec<&WebService> = every_service
-        .iter()
-        .filter(|s| belongs_to_project(s, project_id))
-        .collect();
-
-    render(format, &services, || {
-        print_table(services.iter().map(|s| ServiceRow::from(*s)).collect());
-        if services.is_empty() && project_id.is_some() {
-            println!("No services in the current project. Use --all to list every service.");
-        }
+    Ok(Services {
+        services: every_service
+            .into_iter()
+            .filter(|service| belongs_to_project(service, project_id))
+            .collect(),
+        filtered_by_project: project_id.is_some(),
     })
 }
 
-pub async fn create(
-    client: &ApiClient,
-    args: &ServiceCreateArgs,
-    format: OutputFormat,
-) -> Result<()> {
+pub async fn create(client: &ApiClient, args: &ServiceCreateArgs) -> Result<ServiceCreated> {
     if let (Some(min), Some(max)) = (args.min_instances, args.max_instances) {
         if min > max {
-            return Err(anyhow!(
+            bail!(
                 "--min-instances ({}) cannot exceed --max-instances ({})",
                 min,
                 max
-            ));
+            );
         }
     }
 
@@ -69,9 +147,7 @@ pub async fn create(
         .env_vars
         .iter()
         .map(|raw| {
-            let (key, value) = raw
-                .split_once('=')
-                .ok_or_else(|| anyhow!("invalid --env '{}', expected KEY=VALUE", raw))?;
+            let (key, value) = parse_key_value(raw)?;
             Ok(EnvVarCreate {
                 key: key.to_string(),
                 value: value.to_string(),
@@ -101,56 +177,126 @@ pub async fn create(
         env_vars,
     };
 
-    let created = client.create_service(&body).await?;
+    Ok(ServiceCreated(client.create_service(&body).await?))
+}
 
-    render(format, &created, || {
-        println!("Service {} created.", created.name);
-        println!("ID:     {}", created.id);
-        println!("Status: {}", colorize_status(&created.status));
-        if let Some(url) = &created.url {
-            println!("URL:    {}", url);
-        }
-        println!("\nDeploy it with: runsite deploy {}", created.id);
+pub async fn status(client: &ApiClient, service: Option<&str>) -> Result<ServiceStatus> {
+    let id = client.resolve_service_id(service).await?;
+    Ok(ServiceStatus(client.service(id).await?))
+}
+
+pub async fn run_command(
+    client: &ApiClient,
+    service: Option<&str>,
+    command: ServiceCommand,
+) -> Result<ServiceActionAccepted> {
+    let id = client.resolve_service_id(service).await?;
+    let ServiceRuntimeStatus { status, message } = client.service_command(id, command).await?;
+    Ok(ServiceActionAccepted {
+        service_id: id,
+        action: command.route(),
+        status,
+        message,
     })
 }
 
-pub async fn status(client: &ApiClient, service: Option<&str>, format: OutputFormat) -> Result<()> {
-    let id = client.resolve_service_id(service).await?;
-    let detail: WebServiceDetail = client.service(id).await?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::test_support::*;
+    use crate::output::{render_json, render_text};
+    use wiremock::MockServer;
 
-    render(format, &detail, || {
-        println!("Name:      {}", detail.name);
-        println!("Status:    {}", colorize_status(&detail.status));
-        println!("URL:       {}", detail.url.as_deref().unwrap_or("—"));
-        if let Some(repo) = &detail.github_repo_full_name {
-            let branch = detail.github_branch.as_deref().unwrap_or("—");
-            println!("Repo:      {} ({})", repo, branch);
-        }
-        if let (Some(min), Some(max)) = (detail.min_instances, detail.max_instances) {
-            println!("Instances: {}–{}", min, max);
-        }
-        println!("Updated:   {}", format_time(&detail.updated_at));
-        println!("ID:        {}", detail.id);
-    })
-}
+    async fn serve_one_service_in(server: &MockServer, project_id: &str) {
+        serve(
+            server,
+            "/api/v1/web-services",
+            serde_json::json!({
+                "web_services": [{
+                    "id": SERVICE_ID, "name": "api", "status": "running",
+                    "url": null, "project_id": project_id
+                }],
+                "total": 1
+            }),
+        )
+        .await;
+    }
 
-pub async fn start(client: &ApiClient, service: Option<&str>) -> Result<()> {
-    let id = client.resolve_service_id(service).await?;
-    client.service_command(id, ServiceCommand::Start).await?;
-    println!("Service starting.");
-    Ok(())
-}
+    #[tokio::test]
+    async fn list_json_stays_a_bare_array() {
+        let server = MockServer::start().await;
+        serve_one_service_in(&server, PROJECT_ID).await;
 
-pub async fn stop(client: &ApiClient, service: Option<&str>) -> Result<()> {
-    let id = client.resolve_service_id(service).await?;
-    client.service_command(id, ServiceCommand::Stop).await?;
-    println!("Service stopped.");
-    Ok(())
-}
+        let report = list(&client_for(&server), false).await.unwrap();
 
-pub async fn restart(client: &ApiClient, service: Option<&str>) -> Result<()> {
-    let id = client.resolve_service_id(service).await?;
-    client.service_command(id, ServiceCommand::Restart).await?;
-    println!("Service restarted.");
-    Ok(())
+        assert_eq!(render_json(&report)[0]["name"], "api");
+    }
+
+    #[tokio::test]
+    async fn an_empty_project_points_to_all() {
+        let server = MockServer::start().await;
+        serve_one_service_in(&server, "ca83c4a9-1517-4fe3-93aa-000000000000").await;
+
+        let report = list(&client_in_project(&server, Some(PROJECT_ID)), false)
+            .await
+            .unwrap();
+
+        assert!(report.services.is_empty());
+        assert!(render_text(&report).contains("Use --all"));
+    }
+
+    #[tokio::test]
+    async fn a_restart_reports_the_new_runtime_status() {
+        let server = MockServer::start().await;
+        expect_request(
+            &server,
+            "POST",
+            &format!("/api/v1/web-services/{SERVICE_ID}/restart"),
+            200,
+            serde_json::json!({"status": "deploying", "container_id": null, "host_port": null}),
+        )
+        .await;
+
+        let report = run_command(
+            &client_for(&server),
+            Some(SERVICE_ID),
+            ServiceCommand::Restart,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            render_json(&report),
+            serde_json::json!({"service_id": SERVICE_ID, "action": "restart", "status": "deploying"})
+        );
+        assert_eq!(render_text(&report), "Service restarted.\n");
+    }
+
+    #[tokio::test]
+    async fn min_instances_above_max_is_rejected_before_any_request() {
+        use clap::Parser;
+        let server = MockServer::start().await;
+        let cli = crate::cli::Cli::try_parse_from([
+            "runsite",
+            "service",
+            "create",
+            "api",
+            "--min-instances",
+            "3",
+            "--max-instances",
+            "1",
+            "--image",
+            "nginx:1.27",
+        ])
+        .unwrap();
+        let Some(crate::cli::Commands::Service(crate::cli::ServiceCommands::Create(args))) =
+            cli.command
+        else {
+            panic!("expected service create");
+        };
+
+        let error = create(&client_for(&server), &args).await.unwrap_err();
+
+        assert!(error.to_string().contains("--min-instances"));
+    }
 }

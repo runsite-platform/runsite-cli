@@ -232,6 +232,24 @@ pub struct BulkEnvVarItem {
     pub is_secret: bool,
 }
 
+/// `PUT /env/bulk`: the service's variables after the change, values masked.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EnvVarBulkResult {
+    pub environment_variables: Vec<EnvVar>,
+    #[serde(default)]
+    pub created: i64,
+    #[serde(default)]
+    pub updated: i64,
+}
+
+/// What `POST …/start|stop|restart` answers: the service's runtime status.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServiceRuntimeStatus {
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
 // PUT /env/bulk expects the list under `variables`.
 #[derive(Debug, Serialize)]
 pub struct BulkEnvVars {
