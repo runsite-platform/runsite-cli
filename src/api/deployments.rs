@@ -11,10 +11,10 @@ impl ApiClient {
         service_id: Uuid,
         limit: u32,
     ) -> Result<DeploymentList<T>> {
-        self.get(&format!(
-            "/api/v1/web-services/{}/deployments?limit={}",
-            service_id, limit
-        ))
+        self.get_with_query(
+            &format!("/api/v1/web-services/{}/deployments", service_id),
+            &[("limit", limit.to_string())],
+        )
         .await
     }
 

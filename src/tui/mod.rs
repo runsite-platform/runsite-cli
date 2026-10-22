@@ -22,8 +22,10 @@ mod app_tests;
 mod detail_tests;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod runtime_tests;
 
-use crate::config::{self, ActiveProfile, Config};
+use crate::config::{ActiveProfile, Config, ConfigFile};
 use action::{Action, Effect, ProfileEntry};
 use anyhow::{bail, Result};
 use app::{App, ExitReason, Session};
@@ -34,7 +36,6 @@ use std::io::IsTerminal;
 use std::time::Duration;
 use theme::Theme;
 use tokio::sync::mpsc::{self, UnboundedSender};
-use uuid::Uuid;
 use worker::Worker;
 
 const TICK: Duration = Duration::from_millis(250);
@@ -59,10 +60,7 @@ fn profile_entries(config: &Config) -> Vec<ProfileEntry> {
             name: name.clone(),
             api_url: profile.api_url.clone(),
             has_key: profile.api_key.is_some(),
-            current_project_id: profile
-                .current_project_id
-                .as_deref()
-                .and_then(|id| Uuid::parse_str(id).ok()),
+            current_project_id: profile.selected_project(),
         })
         .collect();
     entries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -72,6 +70,7 @@ fn profile_entries(config: &Config) -> Vec<ProfileEntry> {
 struct Runtime {
     worker: Worker,
     results: UnboundedSender<Action>,
+    config: ConfigFile,
 }
 
 impl Runtime {
@@ -97,7 +96,9 @@ impl Runtime {
                     mutation,
                 } => self.worker.mutate(generation, mutation),
                 Effect::ListProfiles => {
-                    let entries = config::read_current()
+                    let entries = self
+                        .config
+                        .read()
                         .map(|config| profile_entries(&config))
                         .unwrap_or_default();
                     let _ = self.results.send(Action::ProfilesListed(entries));
@@ -105,7 +106,7 @@ impl Runtime {
                 Effect::SwitchProfile { profile } => {
                     // The picker read this profile from the file a moment ago,
                     // so a failed reload is not worth interrupting the session.
-                    if let Ok(active) = ActiveProfile::load(Some(&profile)) {
+                    if let Ok(active) = self.config.load_profile(Some(&profile)) {
                         self.worker = Worker::new(active, self.results.clone());
                     }
                 }
@@ -143,7 +144,7 @@ async fn termination_signal() {
     }
 }
 
-pub async fn run(profile: ActiveProfile) -> Result<()> {
+pub async fn run(profile: ActiveProfile, config: ConfigFile) -> Result<()> {
     let preferred_project = profile.current_project_id();
     let session = Session {
         profile: profile.name(),
@@ -171,7 +172,11 @@ pub async fn run(profile: ActiveProfile) -> Result<()> {
         Utc::now(),
         (size.width, size.height),
     );
-    let mut runtime = Runtime { worker, results };
+    let mut runtime = Runtime {
+        worker,
+        results,
+        config,
+    };
 
     let outcome = event_loop(&mut terminal, &mut app, &mut runtime, &theme, &mut incoming).await;
     ratatui::restore();
@@ -179,10 +184,7 @@ pub async fn run(profile: ActiveProfile) -> Result<()> {
     // Save every profile even if the loop or one of the writes failed.
     let mut save_error = None;
     for (profile, project_id) in &app.chosen_projects {
-        let saved = config::update_profile(profile, |saved| {
-            saved.current_project_id = Some(project_id.to_string())
-        });
-        if let Err(error) = saved {
+        if let Err(error) = runtime.config.select_project(profile, *project_id) {
             save_error.get_or_insert(error);
         }
     }

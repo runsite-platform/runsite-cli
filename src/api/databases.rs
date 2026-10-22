@@ -29,7 +29,9 @@ impl DatabaseCommand {
 impl ApiClient {
     /// Postgres and Valkey instances, up to 100.
     pub async fn databases(&self) -> Result<Vec<ManagedDatabase>> {
-        let list: ManagedDatabaseList = self.get("/api/v1/databases?limit=100").await?;
+        let list: ManagedDatabaseList = self
+            .get_with_query("/api/v1/databases", &[("limit", "100".to_string())])
+            .await?;
         Ok(list.databases)
     }
 
@@ -93,7 +95,10 @@ impl ApiClient {
     /// `service_type` is the API's name: `web_service`, `postgresql` or `redis`.
     pub async fn plans(&self, service_type: &str) -> Result<Vec<ServicePlan>> {
         let list: ServicePlanList = self
-            .get(&format!("/api/v1/plans?service_type={}", service_type))
+            .get_with_query(
+                "/api/v1/plans",
+                &[("service_type", service_type.to_string())],
+            )
             .await?;
         Ok(list.plans)
     }

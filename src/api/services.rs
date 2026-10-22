@@ -53,10 +53,10 @@ impl ApiClient {
         period_seconds: u32,
     ) -> Result<Vec<MetricsPoint>> {
         let history: MetricsHistory = self
-            .get(&format!(
-                "/api/v1/web-services/{}/metrics/history?period={}",
-                service_id, period_seconds
-            ))
+            .get_with_query(
+                &format!("/api/v1/web-services/{}/metrics/history", service_id),
+                &[("period", period_seconds.to_string())],
+            )
             .await?;
         Ok(history.data_points)
     }
@@ -68,11 +68,13 @@ impl ApiClient {
         tail: u32,
         since: Option<i64>,
     ) -> Result<String> {
-        let mut path = format!("/api/v1/web-services/{}/logs?tail={}", service_id, tail);
+        let mut query = vec![("tail", tail.to_string())];
         if let Some(since) = since {
-            path.push_str(&format!("&since={}", since));
+            query.push(("since", since.to_string()));
         }
-        let logs: ContainerLogs = self.get(&path).await?;
+        let logs: ContainerLogs = self
+            .get_with_query(&format!("/api/v1/web-services/{}/logs", service_id), &query)
+            .await?;
         Ok(logs.logs)
     }
 

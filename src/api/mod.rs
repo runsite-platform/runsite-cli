@@ -18,7 +18,7 @@ pub use types::*;
 use crate::config::ActiveProfile;
 use crate::error::ApiError;
 use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, Response};
+use reqwest::{Client, Method, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::time::Duration;
@@ -130,13 +130,13 @@ impl ApiClient {
     }
 
     pub async fn mint_api_key(&self, name: &str) -> Result<String> {
-        let resp = self
-            .http
-            .post(format!("{}/api/api-keys", self.base_url))
-            .json(&serde_json::json!({ "name": name, "scope": "write" }))
-            .send()
+        let value: Value = self
+            .send(
+                self.http
+                    .post(format!("{}/api/api-keys", self.base_url))
+                    .json(&serde_json::json!({ "name": name, "scope": "write" })),
+            )
             .await?;
-        let value: Value = self.handle_response(resp).await?;
         value["plaintext_key"]
             .as_str()
             .map(|s| s.to_string())
@@ -170,15 +170,31 @@ impl ApiClient {
         }
     }
 
-    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+    /// A request to `path` on the API, carrying the profile's token.
+    fn authorized(&self, method: Method, path: &str) -> Result<RequestBuilder> {
         let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
-        let resp = self
+        Ok(self
             .http
-            .get(format!("{}{}", self.base_url, path))
-            .bearer_auth(&token)
-            .send()
-            .await?;
-        self.handle_response(resp).await
+            .request(method, format!("{}{}", self.base_url, path))
+            .bearer_auth(token))
+    }
+
+    async fn send<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T> {
+        let response = request.send().await?;
+        self.handle_response(response).await
+    }
+
+    async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        self.send(self.authorized(Method::GET, path)?).await
+    }
+
+    async fn get_with_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        self.send(self.authorized(Method::GET, path)?.query(query))
+            .await
     }
 
     async fn post<T: DeserializeOwned>(
@@ -186,15 +202,8 @@ impl ApiClient {
         path: &str,
         body: &impl serde::Serialize,
     ) -> Result<T> {
-        let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
-        let resp = self
-            .http
-            .post(format!("{}{}", self.base_url, path))
-            .bearer_auth(&token)
-            .json(body)
-            .send()
-            .await?;
-        self.handle_response(resp).await
+        self.send(self.authorized(Method::POST, path)?.json(body))
+            .await
     }
 
     async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -206,55 +215,38 @@ impl ApiClient {
         path: &str,
         body: &impl serde::Serialize,
     ) -> Result<T> {
-        let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
-        let resp = self
-            .http
-            .put(format!("{}{}", self.base_url, path))
-            .bearer_auth(&token)
-            .json(body)
-            .send()
-            .await?;
-        self.handle_response(resp).await
+        self.send(self.authorized(Method::PUT, path)?.json(body))
+            .await
     }
 
+    /// A DELETE answers 204 with no body, so success is not parsed.
     async fn delete_req(&self, path: &str) -> Result<()> {
-        let token = self.auth_token().ok_or(ApiError::Unauthenticated)?;
-        let resp = self
-            .http
-            .delete(format!("{}{}", self.base_url, path))
-            .bearer_auth(&token)
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            self.handle_response::<Value>(resp).await.map(|_| ())
+        let response = self.authorized(Method::DELETE, path)?.send().await?;
+        if response.status().is_success() {
+            return Ok(());
         }
+        self.handle_response::<Value>(response).await.map(drop)
     }
 
     /// Confirm an API key is valid and return its owner.
     pub async fn verify_api_key(&self, key: &str) -> Result<UserResponse> {
-        let resp = self
-            .http
-            .get(format!("{}/api/v1/users/me", self.base_url))
-            .bearer_auth(key)
-            .send()
-            .await?;
-        self.handle_response(resp).await
+        self.send(
+            self.http
+                .get(format!("{}/api/v1/users/me", self.base_url))
+                .bearer_auth(key),
+        )
+        .await
     }
 
     /// Log in with email + password. The session lives in the client's cookie jar;
     /// the response body carries the user, not a token.
     pub async fn post_login(&self, email: &str, password: &str) -> Result<UserResponse> {
-        let resp = self
-            .http
-            .post(format!("{}/api/auth/login", self.base_url))
-            .json(&serde_json::json!({ "email": email, "password": password }))
-            .send()
-            .await?;
-
-        self.handle_response(resp).await
+        self.send(
+            self.http
+                .post(format!("{}/api/auth/login", self.base_url))
+                .json(&serde_json::json!({ "email": email, "password": password })),
+        )
+        .await
     }
 }
 

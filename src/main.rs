@@ -74,12 +74,13 @@ async fn run(cli: Cli) -> Result<()> {
         return update::install::upgrade(check, cli.output).await;
     }
 
-    let profile = config::ActiveProfile::load(cli.profile.as_deref())?;
+    let config_file = config::ConfigFile::locate()?;
+    let profile = config_file.load_profile(cli.profile.as_deref())?;
     let client = api::ApiClient::new(profile.clone());
     let format = cli.output;
 
     let Some(command) = cli.command else {
-        return tui::run(profile).await;
+        return tui::run(profile, config_file).await;
     };
 
     match command {
@@ -87,7 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
             if !tui::is_interactive() {
                 anyhow::bail!("`runsite ui` needs an interactive terminal");
             }
-            tui::run(profile).await?;
+            tui::run(profile, config_file).await?;
         }
 
         Commands::Login { token } => emit(

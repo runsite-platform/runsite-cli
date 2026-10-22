@@ -7,6 +7,49 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use uuid::Uuid;
+
+const ENV_TOKEN: &str = "RUNSITE_API_TOKEN";
+
+/// The config file on disk, plus `RUNSITE_API_TOKEN`, which overrides the
+/// saved key of whichever profile is loaded.
+#[derive(Clone)]
+pub struct ConfigFile {
+    path: PathBuf,
+    env_token: Option<String>,
+}
+
+impl ConfigFile {
+    pub fn locate() -> Result<Self> {
+        Ok(Self {
+            path: config_path()?,
+            env_token: std::env::var(ENV_TOKEN).ok(),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn at(path: PathBuf, env_token: Option<String>) -> Self {
+        Self { path, env_token }
+    }
+
+    /// Every profile exactly as it is on disk right now.
+    pub fn read(&self) -> Result<Config> {
+        read_from(&self.path)
+    }
+
+    /// The profile named `name`, else the file's `current_profile`.
+    pub fn load_profile(&self, name: Option<&str>) -> Result<ActiveProfile> {
+        ActiveProfile::from_file(self.path.clone(), name, self.env_token.clone())
+    }
+
+    /// Select `project_id` in the profile `name`, which need not be the loaded one.
+    pub fn select_project(&self, name: &str, project_id: Uuid) -> Result<()> {
+        update_profile_at(&self.path, name, |profile| {
+            profile.select_project(Some(project_id))
+        })
+        .map(drop)
+    }
+}
 
 /// Serializes read-modify-write cycles within this process; other processes
 /// are covered by re-reading the file and the atomic rename.
@@ -59,20 +102,11 @@ fn write_to(path: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// The config exactly as it is on disk right now, without any `--profile` override.
-pub fn read_current() -> Result<Config> {
-    read_from(&config_path()?)
-}
-
-/// Change one profile without touching anything else in the file.
+/// Change one profile without touching anything else in the file, and return
+/// it as saved.
 ///
 /// The file is re-read first, so edits made meanwhile by another `runsite`
 /// process (a login, `project use`) survive. `current_profile` is never changed.
-pub fn update_profile(name: &str, change: impl FnOnce(&mut Profile)) -> Result<()> {
-    update_profile_at(&config_path()?, name, change).map(drop)
-}
-
-/// Returns the profile as it was saved.
 fn update_profile_at(
     path: &Path,
     name: &str,

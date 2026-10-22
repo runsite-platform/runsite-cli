@@ -1,10 +1,8 @@
-use super::{config_path, read_from, update_profile_at, Profile};
+use super::{read_from, update_profile_at, Profile};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-
-const ENV_TOKEN: &str = "RUNSITE_API_TOKEN";
 
 /// The profile this process works as: its API URL, credentials and selected
 /// project. Clones share state, so an API key stored after a login is seen by
@@ -26,17 +24,9 @@ struct State {
 }
 
 impl ActiveProfile {
-    /// The profile named by `--profile`, else the file's `current_profile`.
-    /// `RUNSITE_API_TOKEN` overrides its saved key.
-    pub fn load(profile_override: Option<&str>) -> Result<Self> {
-        Self::from_file(
-            config_path()?,
-            profile_override,
-            std::env::var(ENV_TOKEN).ok(),
-        )
-    }
-
-    fn from_file(
+    /// The profile named by `profile_override`, else the file's `current_profile`.
+    /// `env_token` overrides its saved key.
+    pub(super) fn from_file(
         path: PathBuf,
         profile_override: Option<&str>,
         env_token: Option<String>,
@@ -103,11 +93,7 @@ impl ActiveProfile {
 
     /// The project selected with `runsite project use`, if any.
     pub fn current_project_id(&self) -> Option<Uuid> {
-        self.state()
-            .profile
-            .current_project_id
-            .as_deref()
-            .and_then(|id| Uuid::parse_str(id).ok())
+        self.state().profile.selected_project()
     }
 
     pub fn store_api_key(&self, api_key: String) -> Result<()> {
@@ -120,7 +106,7 @@ impl ActiveProfile {
     }
 
     pub fn select_project(&self, project_id: Uuid) -> Result<()> {
-        self.change(|profile| profile.current_project_id = Some(project_id.to_string()))
+        self.change(|profile| profile.select_project(Some(project_id)))
     }
 
     /// Returns false when no project was selected.
@@ -128,7 +114,7 @@ impl ActiveProfile {
         if self.state().profile.current_project_id.is_none() {
             return Ok(false);
         }
-        self.change(|profile| profile.current_project_id = None)?;
+        self.change(|profile| profile.select_project(None))?;
         Ok(true)
     }
 
