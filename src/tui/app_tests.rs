@@ -457,7 +457,7 @@ fn switching_profiles_bumps_the_generation_and_reloads() {
 #[test]
 fn an_action_sent_under_the_old_profile_does_not_block_the_new_one() {
     let mut app = loaded_dashboard();
-    app.pending_action = Some(super::app::PendingAction::InFlight);
+    app.actions.start(app.generation);
     app.last_error = Some("old profile error".to_string());
     update(&mut app, char_key('P'));
     update(
@@ -467,7 +467,7 @@ fn an_action_sent_under_the_old_profile_does_not_block_the_new_one() {
     update(&mut app, char_key('j'));
     update(&mut app, key(KeyCode::Enter));
 
-    assert_eq!(app.pending_action, None);
+    assert!(!app.actions.is_busy());
     assert_eq!(app.last_error, None);
 }
 

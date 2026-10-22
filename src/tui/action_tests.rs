@@ -454,3 +454,28 @@ fn a_result_from_before_a_profile_switch_is_dropped() {
     );
     assert!(app.toast.is_none());
 }
+
+#[test]
+fn a_result_from_the_previous_session_does_not_unblock_the_current_action() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('R'));
+    update(&mut app, char_key('y'));
+    let old_generation = app.generation;
+    // A profile switch starts a new session, where another action is sent.
+    app.generation += 1;
+    app.actions.clear();
+    app.actions.start(app.generation);
+
+    update(
+        &mut app,
+        Action::Mutated {
+            generation: old_generation,
+            mutation: Mutation::Restart {
+                service_id: API_SERVICE,
+            },
+            result: Err(FetchError::RateLimited),
+        },
+    );
+
+    assert!(app.actions.is_busy());
+}
