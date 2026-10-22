@@ -71,6 +71,8 @@ pub struct ManagedDatabase {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ManagedDatabaseList {
     pub databases: Vec<ManagedDatabase>,
+    #[serde(default)]
+    pub total: i64,
 }
 
 /// What `POST /databases/{id}/start|stop` answers.
@@ -228,13 +230,28 @@ pub struct EnvVarList {
 
 // `id` must carry the existing variable's UUID: the API rejects an id-less item
 // whose key already exists with 409 Conflict.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct BulkEnvVarItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
     pub key: String,
-    pub value: String,
+    /// Required unless the item deletes its variable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     pub is_secret: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
+}
+
+impl BulkEnvVarItem {
+    pub fn deletion(variable: &EnvVar) -> Self {
+        Self {
+            id: Some(variable.id),
+            key: variable.key.clone(),
+            deleted: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// `PUT /env/bulk`: the service's variables after the change, values masked.
@@ -421,8 +438,9 @@ mod tests {
             variables: vec![BulkEnvVarItem {
                 id: None,
                 key: "PORT".to_string(),
-                value: "8080".to_string(),
+                value: Some("8080".to_string()),
                 is_secret: false,
+                deleted: false,
             }],
         };
 
@@ -439,8 +457,9 @@ mod tests {
             variables: vec![BulkEnvVarItem {
                 id: Some(id),
                 key: "PORT".to_string(),
-                value: "8080".to_string(),
+                value: Some("8080".to_string()),
                 is_secret: false,
+                deleted: false,
             }],
         };
 

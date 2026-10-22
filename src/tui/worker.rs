@@ -3,7 +3,7 @@
 use super::action::{Action, FetchError, Mutation, Payload, Request};
 use super::log_buffer::LogQuery;
 use super::poller::Ticket;
-use crate::api::{ApiClient, Credentials, DatabaseCommand, ServiceCommand};
+use crate::api::{ApiClient, Credentials, DatabaseCommand, ProjectScope, ServiceCommand};
 use crate::config::ActiveProfile;
 use anyhow::{bail, Result};
 use tokio::sync::mpsc::UnboundedSender;
@@ -92,7 +92,9 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
         Request::KeyScope => Payload::KeyScope(client.current_key().await?),
         Request::Projects => Payload::Projects(client.projects().await?),
         Request::ProjectDetail(id) => Payload::ProjectDetail(client.project_detail(id).await?),
-        Request::UnassignedServices => Payload::UnassignedServices(client.services().await?),
+        Request::UnassignedServices => {
+            Payload::UnassignedServices(client.services(ProjectScope::WithoutProject).await?)
+        }
         Request::Service(id) => Payload::Service(Box::new(client.service(id).await?)),
         Request::LatestDeployment(id) => Payload::LatestDeployment(
             client

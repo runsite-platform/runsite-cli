@@ -1,6 +1,6 @@
 use super::parse_key_value;
 use crate::api::{
-    belongs_to_project, ApiClient, EnvVarCreate, ServiceCommand, ServiceRuntimeStatus, WebService,
+    ApiClient, EnvVarCreate, ProjectScope, ServiceCommand, ServiceRuntimeStatus, WebService,
     WebServiceCreate, WebServiceDetail,
 };
 use crate::cli::ServiceCreateArgs;
@@ -120,17 +120,13 @@ impl Report for ServiceActionAccepted {
 }
 
 pub async fn list(client: &ApiClient, all: bool) -> Result<Services> {
-    let every_service: Vec<WebService> = client.services().await?;
     let project_id = if all {
         None
     } else {
         client.current_project_id()
     };
     Ok(Services {
-        services: every_service
-            .into_iter()
-            .filter(|service| belongs_to_project(service, project_id))
-            .collect(),
+        services: client.services(ProjectScope::selected(project_id)).await?,
         filtered_by_project: project_id.is_some(),
     })
 }
@@ -208,7 +204,8 @@ mod tests {
     use super::*;
     use crate::api::test_support::*;
     use crate::output::{render_json, render_text};
-    use wiremock::MockServer;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn serve_one_service_in(server: &MockServer, project_id: &str) {
         serve(
@@ -238,7 +235,16 @@ mod tests {
     #[tokio::test]
     async fn an_empty_project_points_to_all() {
         let server = MockServer::start().await;
-        serve_one_service_in(&server, "ca83c4a9-1517-4fe3-93aa-000000000000").await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/web-services"))
+            .and(query_param("project_id", PROJECT_ID))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"web_services": [], "total": 0})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
 
         let report = list(&client_in_project(&server, Some(PROJECT_ID)), false)
             .await

@@ -22,14 +22,6 @@ impl ApiClient {
         )
         .await
     }
-
-    pub async fn delete_env_var(&self, service_id: Uuid, variable_id: Uuid) -> Result<()> {
-        self.delete_req(&format!(
-            "/api/v1/web-services/{}/env/{}",
-            service_id, variable_id
-        ))
-        .await
-    }
 }
 
 #[cfg(test)]
@@ -80,8 +72,9 @@ mod tests {
             variables: vec![BulkEnvVarItem {
                 id: None,
                 key: "PORT".to_string(),
-                value: "8080".to_string(),
+                value: Some("8080".to_string()),
                 is_secret: false,
+                deleted: false,
             }],
         };
         let result = client_for(&server)
@@ -90,24 +83,5 @@ mod tests {
             .unwrap();
         assert_eq!(result.environment_variables[0].key, "PORT");
         assert_eq!(result.created, 1);
-    }
-
-    #[tokio::test]
-    async fn deleting_an_env_var_uses_its_id() {
-        let server = MockServer::start().await;
-        let variable_id = "3f2a1b4c-0000-4000-8000-0000000000e1";
-        expect_request(
-            &server,
-            "DELETE",
-            &format!("/api/v1/web-services/{SERVICE_ID}/env/{variable_id}"),
-            204,
-            serde_json::json!({}),
-        )
-        .await;
-
-        client_for(&server)
-            .delete_env_var(uuid(SERVICE_ID), uuid(variable_id))
-            .await
-            .unwrap();
     }
 }

@@ -192,11 +192,9 @@ pub fn landing_detail() -> ProjectDetail {
     }
 }
 
+/// What `GET /web-services?project_id=none` answers.
 pub fn unassigned() -> Vec<ServiceInfo> {
-    vec![
-        service(LOOSE_SERVICE, "scratch", "sleeping", None),
-        service(API_SERVICE, "api", "running", Some(LANDING)),
-    ]
+    vec![service(LOOSE_SERVICE, "scratch", "sleeping", None)]
 }
 
 /// A logged-in app showing the loaded dashboard with `landing` selected.

@@ -1,6 +1,6 @@
 use crate::api::{
-    belongs_to_project, ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine,
-    DatabaseRuntimeStatus, ManagedDatabase, ServicePlan,
+    ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine, DatabaseRuntimeStatus,
+    ManagedDatabase, ProjectScope, ServicePlan,
 };
 use crate::cli::{DbEngine, PlanServiceType};
 use crate::output::format::{colorize_status, or_placeholder, PLACEHOLDER};
@@ -198,12 +198,7 @@ pub async fn list(client: &ApiClient, all: bool) -> Result<Databases> {
         client.current_project_id()
     };
     Ok(Databases {
-        databases: client
-            .databases()
-            .await?
-            .into_iter()
-            .filter(|database| belongs_to_project(database, project_id))
-            .collect(),
+        databases: client.databases(ProjectScope::selected(project_id)).await?,
         filtered_by_project: project_id.is_some(),
     })
 }
@@ -293,7 +288,8 @@ mod tests {
     use super::*;
     use crate::api::test_support::*;
     use crate::output::{render_json, render_text};
-    use wiremock::MockServer;
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn delete_reports_what_was_deleted() {
@@ -329,19 +325,32 @@ mod tests {
 
     const OTHER_PROJECT_ID: &str = "ca83c4a9-1517-4fe3-93aa-000000000009";
 
+    fn database_in_project_json() -> serde_json::Value {
+        serde_json::json!({"id": DATABASE_ID, "kind": "postgresql", "name": "main", "status": "running",
+                           "plan_name": null, "storage_limit_gb": null, "project_id": PROJECT_ID})
+    }
+
     async fn serve_databases_in_two_projects(server: &MockServer) {
-        serve(
-            server,
-            "/api/v1/databases",
-            serde_json::json!({"databases": [
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param("project_id", PROJECT_ID))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"databases": [database_in_project_json()], "total": 1}),
+            ))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param_is_missing("project_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"databases": [
                 {"id": DATABASE_ID, "kind": "postgresql", "name": "main", "status": "running",
                  "plan_name": null, "storage_limit_gb": null, "project_id": PROJECT_ID},
                 {"id": "3f2a1b4c-0000-4000-8000-000000000005", "kind": "valkey", "name": "cache",
                  "status": "running", "plan_name": null, "storage_limit_gb": null,
                  "project_id": OTHER_PROJECT_ID}
-            ]}),
-        )
-        .await;
+            ]})))
+            .mount(server)
+            .await;
     }
 
     #[tokio::test]

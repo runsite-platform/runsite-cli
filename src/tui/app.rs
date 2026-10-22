@@ -276,12 +276,7 @@ impl App {
                 self.dashboard.normalize_selection();
             }
             Payload::UnassignedServices(services) => {
-                self.dashboard.unassigned = Some(
-                    services
-                        .into_iter()
-                        .filter(|service| service.project_id.is_none())
-                        .collect(),
-                );
+                self.dashboard.unassigned = Some(services);
                 self.dashboard.normalize_selection();
             }
             Payload::Database(detail) => {

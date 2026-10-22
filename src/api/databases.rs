@@ -1,9 +1,14 @@
 use super::{
     ApiClient, Connection, ConnectionCreate, DatabaseCreate, DatabaseDetail, DatabaseRuntimeStatus,
-    ManagedDatabase, ManagedDatabaseList, ServicePlan, ServicePlanList,
+    ManagedDatabase, ManagedDatabaseList, ProjectScope, ServicePlan, ServicePlanList,
 };
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
+
+/// The largest page `GET /databases` serves.
+const DATABASE_PAGE_SIZE: usize = 100;
+/// Stops paging even if the API keeps reporting more.
+const MAX_DATABASE_PAGES: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseEngine {
@@ -27,12 +32,27 @@ impl DatabaseCommand {
 }
 
 impl ApiClient {
-    /// Postgres and Valkey instances, up to 100.
-    pub async fn databases(&self) -> Result<Vec<ManagedDatabase>> {
-        let list: ManagedDatabaseList = self
-            .get_with_query("/api/v1/databases", &[("limit", "100".to_string())])
-            .await?;
-        Ok(list.databases)
+    /// The Postgres and Valkey instances in `scope`, every page of them.
+    pub async fn databases(&self, scope: ProjectScope) -> Result<Vec<ManagedDatabase>> {
+        let mut databases = Vec::new();
+        for page in 0..MAX_DATABASE_PAGES {
+            let mut query = vec![
+                ("limit", DATABASE_PAGE_SIZE.to_string()),
+                ("offset", (page * DATABASE_PAGE_SIZE).to_string()),
+            ];
+            query.extend(scope.query());
+            let list: ManagedDatabaseList =
+                self.get_with_query("/api/v1/databases", &query).await?;
+            let page_was_full = list.databases.len() == DATABASE_PAGE_SIZE;
+            databases.extend(list.databases);
+            if !page_was_full || databases.len() as i64 >= list.total {
+                return Ok(databases);
+            }
+        }
+        Err(anyhow!(
+            "more than {} databases; narrow the list to a project",
+            MAX_DATABASE_PAGES * DATABASE_PAGE_SIZE
+        ))
     }
 
     pub async fn database(&self, database_id: Uuid) -> Result<DatabaseDetail> {
@@ -128,7 +148,7 @@ impl ApiClient {
 
     /// A database ID, or a name looked up in the selected project.
     pub async fn resolve_database(&self, name_or_id: &str) -> Result<ManagedDatabase> {
-        let databases = self.databases().await?;
+        let databases = self.databases(ProjectScope::Everything).await?;
         self.find(databases, Some(name_or_id)).await
     }
 }
@@ -145,6 +165,65 @@ mod tests {
         serde_json::json!({
             "id": id, "kind": kind, "name": name, "status": "running", "plan_name": "Starter"
         })
+    }
+
+    fn numbered_databases(range: std::ops::Range<usize>) -> Vec<serde_json::Value> {
+        range
+            .map(|index| {
+                let id = format!("3f2a1b4c-0000-4000-8000-{index:012}");
+                database_json(&id, &format!("db-{index}"), "postgresql")
+            })
+            .collect()
+    }
+
+    async fn serve_page(server: &MockServer, offset: &str, databases: Vec<serde_json::Value>) {
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param("offset", offset))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"databases": databases, "total": 101})),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn databases_read_every_page() {
+        let server = MockServer::start().await;
+        serve_page(&server, "0", numbered_databases(0..100)).await;
+        serve_page(&server, "100", numbered_databases(100..101)).await;
+
+        let databases = client_for(&server)
+            .databases(ProjectScope::Everything)
+            .await
+            .unwrap();
+
+        assert_eq!(databases.len(), 101);
+        assert_eq!(databases[100].name, "db-100");
+    }
+
+    #[tokio::test]
+    async fn databases_ask_the_api_for_one_project() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param("project_id", PROJECT_ID))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"databases": [], "total": 0})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let databases = client_for(&server)
+            .databases(ProjectScope::Project(uuid(PROJECT_ID)))
+            .await
+            .unwrap();
+
+        assert!(databases.is_empty());
     }
 
     async fn serve_databases(server: &MockServer, databases: Vec<serde_json::Value>) {

@@ -68,6 +68,30 @@ impl Named for Project {
     }
 }
 
+/// Which part of the workspace a list asks the API for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectScope {
+    Everything,
+    Project(Uuid),
+    WithoutProject,
+}
+
+impl ProjectScope {
+    /// The selected project, or everything when none is selected.
+    pub fn selected(project_id: Option<Uuid>) -> Self {
+        project_id.map_or(Self::Everything, Self::Project)
+    }
+
+    /// The `project_id` query parameter for this scope, if any.
+    pub fn query(self) -> Option<(&'static str, String)> {
+        match self {
+            Self::Everything => None,
+            Self::Project(id) => Some(("project_id", id.to_string())),
+            Self::WithoutProject => Some(("project_id", "none".to_string())),
+        }
+    }
+}
+
 /// True when `resource` sits in `selected_project`, or when none is selected.
 pub fn belongs_to_project<T: Named>(resource: &T, selected_project: Option<Uuid>) -> bool {
     match selected_project {

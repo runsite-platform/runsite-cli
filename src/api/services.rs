@@ -1,6 +1,6 @@
 use super::{
-    ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ResourceMetrics, ServiceRuntimeStatus,
-    WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
+    ApiClient, ContainerLogs, MetricsHistory, MetricsPoint, ProjectScope, ResourceMetrics,
+    ServiceRuntimeStatus, WebService, WebServiceCreate, WebServiceDetail, WebServiceList,
 };
 use anyhow::Result;
 use serde::de::DeserializeOwned;
@@ -24,10 +24,11 @@ impl ServiceCommand {
 }
 
 impl ApiClient {
-    /// Every service on the account. `T` is the caller's view of a service:
+    /// The services in `scope`. `T` is the caller's view of a service:
     /// `WebService` or `ServiceInfo`.
-    pub async fn services<T: DeserializeOwned>(&self) -> Result<Vec<T>> {
-        let list: WebServiceList<T> = self.get("/api/v1/web-services").await?;
+    pub async fn services<T: DeserializeOwned>(&self, scope: ProjectScope) -> Result<Vec<T>> {
+        let query: Vec<_> = scope.query().into_iter().collect();
+        let list: WebServiceList<T> = self.get_with_query("/api/v1/web-services", &query).await?;
         Ok(list.web_services)
     }
 
@@ -99,7 +100,7 @@ impl ApiClient {
         if let Some(id) = name_or_id.and_then(|text| Uuid::parse_str(text).ok()) {
             return Ok(id);
         }
-        let services: Vec<WebService> = self.services().await?;
+        let services: Vec<WebService> = self.services(ProjectScope::Everything).await?;
         Ok(self.find(services, name_or_id).await?.id)
     }
 }
@@ -109,7 +110,8 @@ mod tests {
     use super::super::test_support::*;
     use super::super::ServiceInfo;
     use super::*;
-    use wiremock::MockServer;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const OTHER_PROJECT_ID: &str = "ca83c4a9-1517-4fe3-93aa-000000000009";
 
@@ -147,9 +149,34 @@ mod tests {
         )
         .await;
 
-        let services: Vec<ServiceInfo> = client_for(&server).services().await.unwrap();
+        let services: Vec<ServiceInfo> = client_for(&server)
+            .services(ProjectScope::Everything)
+            .await
+            .unwrap();
         assert_eq!(services[0].project_id, None);
         assert_eq!(services[0].image_ref.as_deref(), Some("nginx:1.27"));
+    }
+
+    #[tokio::test]
+    async fn services_without_a_project_are_filtered_by_the_api() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/web-services"))
+            .and(query_param("project_id", "none"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"web_services": [], "total": 0})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let services: Vec<ServiceInfo> = client_for(&server)
+            .services(ProjectScope::WithoutProject)
+            .await
+            .unwrap();
+
+        assert!(services.is_empty());
     }
 
     #[tokio::test]

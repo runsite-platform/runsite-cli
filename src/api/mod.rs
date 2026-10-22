@@ -12,7 +12,7 @@ mod types;
 mod users;
 pub use databases::{DatabaseCommand, DatabaseEngine};
 pub use login::Credentials;
-pub use lookup::belongs_to_project;
+pub use lookup::ProjectScope;
 pub use services::ServiceCommand;
 pub use status::{Condition, DatabaseStatus, DeploymentStatus, ServiceStatus, Status};
 pub use types::*;
@@ -254,6 +254,7 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
+    use super::lookup::belongs_to_project;
     use super::*;
 
     fn service(name: &str, project_id: Option<&str>) -> WebService {

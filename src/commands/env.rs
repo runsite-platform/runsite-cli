@@ -91,14 +91,16 @@ fn upsert_items(existing: &[EnvVar], vars: &[String]) -> Result<Vec<BulkEnvVarIt
             Ok(BulkEnvVarItem {
                 id: current.map(|variable| variable.id),
                 key: key.to_string(),
-                value: value.to_string(),
+                value: Some(value.to_string()),
                 is_secret: current.map(|variable| variable.is_secret).unwrap_or(true),
+                deleted: false,
             })
         })
         .collect()
 }
 
-/// Every key is checked before anything is deleted, so a typo deletes nothing.
+/// Every key is checked first, then all are deleted in one request: a typo or
+/// a failure deletes nothing.
 pub async fn delete(
     client: &ApiClient,
     service: Option<&str>,
@@ -119,11 +121,14 @@ pub async fn delete(
         );
     }
 
-    for key in keys {
-        if let Some(variable) = existing.iter().find(|variable| &variable.key == key) {
-            client.delete_env_var(id, variable.id).await?;
-        }
-    }
+    let body = BulkEnvVars {
+        variables: existing
+            .iter()
+            .filter(|variable| keys.contains(&variable.key))
+            .map(BulkEnvVarItem::deletion)
+            .collect(),
+    };
+    client.set_env_vars(id, &body).await?;
 
     Ok(EnvVarsDeleted {
         service_id: id,
@@ -137,7 +142,7 @@ mod tests {
     use super::*;
     use crate::api::test_support::*;
     use crate::output::{render_json, render_text};
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const VARIABLE_ID: &str = "3f2a1b4c-0000-4000-8000-0000000000e1";
@@ -177,7 +182,7 @@ mod tests {
     fn a_new_key_is_secret() {
         let items = upsert_items(&[], &["TOKEN=abc=def".to_string()]).unwrap();
         assert_eq!(items[0].id, None);
-        assert_eq!(items[0].value, "abc=def");
+        assert_eq!(items[0].value.as_deref(), Some("abc=def"));
         assert!(items[0].is_secret);
     }
 
@@ -220,9 +225,9 @@ mod tests {
     async fn delete_with_an_unknown_key_deletes_nothing() {
         let server = MockServer::start().await;
         serve_existing(&server).await;
-        Mock::given(method("DELETE"))
-            .and(path(format!("{}/{VARIABLE_ID}", env_route())))
-            .respond_with(ResponseTemplate::new(204))
+        Mock::given(method("PUT"))
+            .and(path(format!("{}/bulk", env_route())))
+            .respond_with(ResponseTemplate::new(200))
             .expect(0)
             .mount(&server)
             .await;
@@ -242,9 +247,16 @@ mod tests {
     async fn delete_reports_the_deleted_keys() {
         let server = MockServer::start().await;
         serve_existing(&server).await;
-        Mock::given(method("DELETE"))
-            .and(path(format!("{}/{VARIABLE_ID}", env_route())))
-            .respond_with(ResponseTemplate::new(204))
+        Mock::given(method("PUT"))
+            .and(path(format!("{}/bulk", env_route())))
+            .and(body_json(serde_json::json!({
+                "variables": [
+                    {"id": VARIABLE_ID, "key": "PORT", "is_secret": false, "deleted": true}
+                ]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "environment_variables": [], "total": 0, "created": 0, "updated": 0, "deleted": 1
+            })))
             .expect(1)
             .mount(&server)
             .await;
