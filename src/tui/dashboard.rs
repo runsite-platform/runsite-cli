@@ -1,4 +1,6 @@
+use super::action::{Payload, Request};
 use super::actions::DeploymentActivity;
+use super::poller::Cadence;
 use crate::api::{
     Deployment, PostgresInProject, Project, ProjectDetail, RedisInProject, Service, Status,
 };
@@ -218,5 +220,60 @@ impl DashboardState {
             Pane::Projects => &self.project_filter,
             Pane::Resources => &self.resource_filter,
         }
+    }
+
+    /// What the dashboard keeps fresh, and how often.
+    pub fn polls(&self) -> Vec<(Request, Cadence)> {
+        let mut polls = vec![
+            (Request::Projects, Cadence::seconds(30)),
+            // Needed on every dashboard view: the Unassigned row only exists
+            // when this list has services without a project.
+            (Request::UnassignedServices, Cadence::seconds(30)),
+        ];
+        // Wait for the list: a project saved in the config may no longer exist.
+        if let (Some(_), Some(ProjectChoice::Project(id))) = (&self.projects, self.selected_project)
+        {
+            polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
+        }
+        if self.focus == Pane::Resources {
+            if let Some(Resource::Service(service)) = self.selected_resource() {
+                polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
+            }
+        }
+        polls
+    }
+
+    /// Takes in a reply to one of the dashboard's requests; others are ignored.
+    pub fn apply(&mut self, request: Request, payload: Payload) {
+        match payload {
+            Payload::Projects(projects) => self.projects = Some(projects),
+            Payload::ProjectDetail(detail) => {
+                self.details.insert(detail.id, detail);
+            }
+            Payload::UnassignedServices(services) => self.unassigned = Some(services),
+            Payload::LatestDeployment(deployment) => {
+                if let Request::LatestDeployment(service_id) = request {
+                    self.latest_deployments
+                        .insert(service_id, deployment.map(|deployment| *deployment));
+                }
+                return;
+            }
+            _ => return,
+        }
+        self.normalize_selection();
+    }
+
+    /// True when the 404 was for a project, which is then dropped from the
+    /// list so it is not polled again.
+    pub fn vanished(&mut self, request: Request) -> bool {
+        let Request::ProjectDetail(id) = request else {
+            return false;
+        };
+        self.details.remove(&id);
+        if let Some(projects) = &mut self.projects {
+            projects.retain(|project| project.id != id);
+        }
+        self.normalize_selection();
+        true
     }
 }

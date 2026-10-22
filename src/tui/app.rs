@@ -1,7 +1,7 @@
 use super::action::{Action, Effect, Mutation, Payload, ProfileEntry, Request};
 use super::action_gate::{ActionSlot, Confirm};
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
-use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
+use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState, Vanished};
 use super::keymap::{self, Command};
 use super::login::LoginState;
 use super::poll_plan::desired_polls;
@@ -155,13 +155,14 @@ impl App {
     }
 
     fn fetch_effect(&mut self, request: Request, ticket: Ticket) -> Effect {
-        match (request, &mut self.screen) {
-            (Request::Logs(service), Screen::ServiceDetail(detail)) => Effect::FetchLogs {
-                ticket,
-                service,
-                query: detail.logs.start_fetch(),
-            },
-            _ => Effect::Fetch { ticket, request },
+        let log_query = match (request, &mut self.screen) {
+            (Request::Logs(_), Screen::ServiceDetail(detail)) => Some(detail.logs.start_fetch()),
+            _ => None,
+        };
+        Effect::Fetch {
+            ticket,
+            request,
+            log_query,
         }
     }
 
@@ -256,40 +257,20 @@ impl App {
         }
     }
 
+    /// The open screen takes its own replies; the rest belong to the session
+    /// or to the dashboard, which outlives the screens opened from it.
     fn apply_payload(&mut self, request: Request, payload: Payload) {
-        match payload {
-            Payload::LatestDeployment(deployment) if matches!(self.screen, Screen::Dashboard) => {
-                if let Request::LatestDeployment(service_id) = request {
-                    self.dashboard
-                        .latest_deployments
-                        .insert(service_id, deployment.map(|deployment| *deployment));
-                }
-            }
-            Payload::CurrentUser(user) => self.session.user = Some(user),
-            Payload::KeyScope(identity) => self.session.key_scope = Some(identity.scope),
-            Payload::Projects(projects) => {
-                self.dashboard.projects = Some(projects);
-                self.dashboard.normalize_selection();
-            }
-            Payload::ProjectDetail(detail) => {
-                self.dashboard.details.insert(detail.id, detail);
-                self.dashboard.normalize_selection();
-            }
-            Payload::UnassignedServices(services) => {
-                self.dashboard.unassigned = Some(services);
-                self.dashboard.normalize_selection();
-            }
-            Payload::Database(detail) => {
-                if let Screen::DatabaseDetail(database) = &mut self.screen {
-                    database.detail = Some(*detail);
-                }
-            }
-            payload => {
-                let now = self.now;
-                if let Screen::ServiceDetail(detail) = &mut self.screen {
-                    apply_service_payload(detail, payload, now);
-                }
-            }
+        let now = self.now;
+        let unclaimed = match &mut self.screen {
+            Screen::ServiceDetail(detail) => detail.apply(payload, now),
+            Screen::DatabaseDetail(database) => database.apply(payload),
+            _ => Some(payload),
+        };
+        match unclaimed {
+            Some(Payload::CurrentUser(user)) => self.session.user = Some(user),
+            Some(Payload::KeyScope(identity)) => self.session.key_scope = Some(identity.scope),
+            Some(payload) => self.dashboard.apply(request, payload),
+            None => {}
         }
     }
 
@@ -362,39 +343,22 @@ impl App {
     }
 
     fn handle_not_found(&mut self, request: Request) {
-        match (request, &mut self.screen) {
-            (Request::ProjectDetail(id), _) => {
-                // Drop it from the list too, so it is not polled again.
-                self.dashboard.details.remove(&id);
-                if let Some(projects) = &mut self.dashboard.projects {
-                    projects.retain(|project| project.id != id);
-                }
-                self.dashboard.normalize_selection();
-                self.show_toast("No longer exists", Tone::Bad);
-            }
-            (Request::Deployment(..), Screen::ServiceDetail(detail))
-                if detail.deployment_view.is_some() =>
-            {
-                detail.deployment_view = None;
-                self.show_toast("No longer exists", Tone::Bad);
-            }
-            (
-                Request::Service(_)
-                | Request::LatestDeployment(_)
-                | Request::Metrics(_)
-                | Request::MetricsHistory(_)
-                | Request::Logs(_)
-                | Request::Deployments(_),
-                Screen::ServiceDetail(_),
-            )
-            | (Request::Database(_), Screen::DatabaseDetail(_)) => {
+        let vanished = match &mut self.screen {
+            Screen::ServiceDetail(detail) => detail.vanished(request),
+            Screen::DatabaseDetail(database) => database.vanished(request),
+            _ => Vanished::Unrelated,
+        };
+        match vanished {
+            Vanished::Whole => {
                 // A modal about the vanished resource must not survive it.
                 self.overlay = None;
                 self.screen = Screen::Dashboard;
-                self.show_toast("No longer exists", Tone::Bad);
             }
-            _ => {}
+            Vanished::Part => {}
+            Vanished::Unrelated if self.dashboard.vanished(request) => {}
+            Vanished::Unrelated => return,
         }
+        self.show_toast("No longer exists", Tone::Bad);
     }
 
     fn handle_login_result(
@@ -693,37 +657,6 @@ impl App {
             }
             Pane::Resources => self.dashboard.move_resource(delta),
         }
-    }
-}
-
-fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now: DateTime<Utc>) {
-    match payload {
-        Payload::Service(service) if service.id == detail.service_id => {
-            detail.name = service.name.clone();
-            detail.service = Some(*service);
-        }
-        Payload::LatestDeployment(deployment) => {
-            detail.latest_deployment = deployment.map(|deployment| *deployment);
-            detail.deployments_checked = true;
-        }
-        Payload::Metrics(metrics) => detail.metrics = Some(metrics),
-        Payload::MetricsHistory(points) => detail.history = points,
-        Payload::Logs { body, query } => detail.logs.receive(query, &body, now),
-        Payload::Deployments(deployments) => {
-            detail.deploy_cursor = detail
-                .deploy_cursor
-                .min(deployments.len().saturating_sub(1));
-            detail.deployments = Some(deployments);
-            detail.deployments_checked = true;
-        }
-        Payload::Deployment(deployment) => {
-            if let Some(view) = &mut detail.deployment_view {
-                if view.id == deployment.id {
-                    view.detail = Some(*deployment);
-                }
-            }
-        }
-        _ => {}
     }
 }
 

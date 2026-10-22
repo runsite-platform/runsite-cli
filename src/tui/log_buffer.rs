@@ -24,6 +24,16 @@ pub struct LogQuery {
     pub since: Option<i64>,
 }
 
+/// The query of a first fetch, before any line is known.
+impl Default for LogQuery {
+    fn default() -> Self {
+        Self {
+            tail: FIRST_TAIL,
+            since: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogLine {
     Entry {
@@ -131,10 +141,7 @@ impl LogBuffer {
 
     fn next_query(&self) -> LogQuery {
         match self.cursor {
-            None => LogQuery {
-                tail: FIRST_TAIL,
-                since: None,
-            },
+            None => LogQuery::default(),
             Some(cursor) => LogQuery {
                 tail: FOLLOW_TAIL,
                 since: Some(cursor.timestamp() - OVERLAP_SECONDS),

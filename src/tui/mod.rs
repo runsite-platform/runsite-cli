@@ -79,12 +79,11 @@ impl Runtime {
     fn execute(&mut self, effects: Vec<Effect>) -> bool {
         for effect in effects {
             match effect {
-                Effect::Fetch { ticket, request } => self.worker.fetch(ticket, request),
-                Effect::FetchLogs {
+                Effect::Fetch {
                     ticket,
-                    service,
-                    query,
-                } => self.worker.fetch_logs(ticket, service, query),
+                    request,
+                    log_query,
+                } => self.worker.fetch(ticket, request, log_query),
                 Effect::LogIn {
                     generation,
                     credentials,

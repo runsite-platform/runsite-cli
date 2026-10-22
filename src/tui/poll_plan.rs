@@ -3,10 +3,8 @@
 
 use super::action::Request;
 use super::app::Screen;
-use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
-use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
+use super::dashboard::DashboardState;
 use super::poller::Cadence;
-use crate::api::Status;
 
 pub fn desired_polls(screen: &Screen, dashboard: &DashboardState) -> Vec<(Request, Cadence)> {
     let mut polls = vec![
@@ -15,79 +13,9 @@ pub fn desired_polls(screen: &Screen, dashboard: &DashboardState) -> Vec<(Reques
     ];
     match screen {
         Screen::Login(_) | Screen::Blocked { .. } => return Vec::new(),
-        Screen::Dashboard => polls.extend(dashboard_polls(dashboard)),
-        Screen::ServiceDetail(detail) => polls.extend(service_polls(detail)),
-        Screen::DatabaseDetail(database) => polls.push(database_poll(database)),
-    }
-    polls
-}
-
-fn dashboard_polls(dashboard: &DashboardState) -> Vec<(Request, Cadence)> {
-    let mut polls = vec![
-        (Request::Projects, Cadence::seconds(30)),
-        // Needed on every dashboard view: the Unassigned row only exists
-        // when this list has services without a project.
-        (Request::UnassignedServices, Cadence::seconds(30)),
-    ];
-    // Wait for the list: a project saved in the config may no longer exist.
-    if let (Some(_), Some(ProjectChoice::Project(id))) =
-        (&dashboard.projects, dashboard.selected_project)
-    {
-        polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
-    }
-    if dashboard.focus == Pane::Resources {
-        if let Some(Resource::Service(service)) = dashboard.selected_resource() {
-            polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
-        }
-    }
-    polls
-}
-
-fn database_poll(database: &DatabaseDetailState) -> (Request, Cadence) {
-    let transitional = database
-        .detail
-        .as_ref()
-        .is_some_and(|detail| detail.status.is_transitional());
-    let interval = if transitional { 1 } else { 5 };
-    (
-        Request::Database(database.database_id),
-        Cadence::seconds(interval),
-    )
-}
-
-fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
-    let id = detail.service_id;
-    let fast = if detail.transitional() { 1 } else { 3 };
-    let mut polls = vec![
-        (Request::Service(id), Cadence::seconds(fast)),
-        (Request::LatestDeployment(id), Cadence::seconds(fast)),
-    ];
-    let deployments_interval = if detail.deployment_in_progress() {
-        3
-    } else {
-        10
-    };
-    match detail.tab {
-        DetailTab::Overview => polls.extend([
-            (Request::Metrics(id), Cadence::seconds(5)),
-            (Request::MetricsHistory(id), Cadence::seconds(60)),
-            (
-                Request::Deployments(id),
-                Cadence::seconds(deployments_interval),
-            ),
-        ]),
-        DetailTab::Logs => polls.push((Request::Logs(id), Cadence::seconds(2))),
-        DetailTab::Deploys => polls.push((
-            Request::Deployments(id),
-            Cadence::seconds(deployments_interval),
-        )),
-    }
-    if let Some(view) = &detail.deployment_view {
-        let cadence = match &view.detail {
-            Some(deployment) if !deployment.status.is_transitional() => Cadence::Once,
-            _ => Cadence::seconds(3),
-        };
-        polls.push((Request::Deployment(id, view.id), cadence));
+        Screen::Dashboard => polls.extend(dashboard.polls()),
+        Screen::ServiceDetail(detail) => polls.extend(detail.polls()),
+        Screen::DatabaseDetail(database) => polls.push(database.poll()),
     }
     polls
 }
@@ -95,6 +23,7 @@ fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::detail::{DetailTab, ServiceDetailState};
     use crate::tui::fixtures::{service, API_SERVICE, LANDING};
     use crate::tui::login::LoginState;
 

@@ -153,12 +153,8 @@ pub enum Effect {
     Fetch {
         ticket: Ticket,
         request: Request,
-    },
-    /// Logs need the query built from the buffer's cursor.
-    FetchLogs {
-        ticket: Ticket,
-        service: Uuid,
-        query: LogQuery,
+        /// Where the log buffer wants to resume, for `Request::Logs`.
+        log_query: Option<LogQuery>,
     },
     LogIn {
         generation: u64,

@@ -6,9 +6,8 @@ use super::poller::Ticket;
 use crate::api::{ApiClient, Credentials, DatabaseCommand, ProjectScope, ServiceCommand};
 use crate::config::ActiveProfile;
 use crate::error::ApiError;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
-use uuid::Uuid;
 
 pub struct Worker {
     client: ApiClient,
@@ -25,33 +24,16 @@ impl Worker {
         }
     }
 
-    pub fn fetch(&self, ticket: Ticket, request: Request) {
+    pub fn fetch(&self, ticket: Ticket, request: Request, log_query: Option<LogQuery>) {
         let client = self.client.clone();
         let results = self.results.clone();
         tokio::spawn(async move {
-            let result = load(&client, request)
+            let result = load(&client, request, log_query)
                 .await
                 .map_err(|error| ApiError::classify(&error));
             let _ = results.send(Action::Loaded {
                 ticket,
                 request,
-                result,
-            });
-        });
-    }
-
-    pub fn fetch_logs(&self, ticket: Ticket, service: Uuid, query: LogQuery) {
-        let client = self.client.clone();
-        let results = self.results.clone();
-        tokio::spawn(async move {
-            let result = client
-                .service_logs(service, query.tail, query.since)
-                .await
-                .map(|body| Payload::Logs { body, query })
-                .map_err(|error| ApiError::classify(&error));
-            let _ = results.send(Action::Loaded {
-                ticket,
-                request: Request::Logs(service),
                 result,
             });
         });
@@ -87,7 +69,11 @@ impl Worker {
     }
 }
 
-async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
+async fn load(
+    client: &ApiClient,
+    request: Request,
+    log_query: Option<LogQuery>,
+) -> Result<Payload> {
     Ok(match request {
         Request::CurrentUser => Payload::CurrentUser(client.current_user().await?),
         Request::KeyScope => Payload::KeyScope(client.current_key().await?),
@@ -117,7 +103,11 @@ async fn load(client: &ApiClient, request: Request) -> Result<Payload> {
             Payload::Deployment(Box::new(client.deployment(service, deployment).await?))
         }
         Request::Database(id) => Payload::Database(Box::new(client.database(id).await?)),
-        Request::Logs(_) => bail!("log requests carry a query: use Worker::fetch_logs"),
+        Request::Logs(id) => {
+            let query = log_query.unwrap_or_default();
+            let body = client.service_logs(id, query.tail, query.since).await?;
+            Payload::Logs { body, query }
+        }
     })
 }
 

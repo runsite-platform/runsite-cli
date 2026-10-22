@@ -68,6 +68,7 @@ async fn a_fetch_comes_back_as_a_loaded_payload() {
     assert!(runtime.execute(vec![Effect::Fetch {
         ticket: Ticket::new(7),
         request: Request::CurrentUser,
+        log_query: None,
     }]));
 
     match next_action(&mut incoming).await {
@@ -100,6 +101,7 @@ async fn an_api_error_comes_back_classified() {
     runtime.execute(vec![Effect::Fetch {
         ticket: Ticket::new(1),
         request: Request::CurrentUser,
+        log_query: None,
     }]);
 
     assert!(matches!(
@@ -179,6 +181,7 @@ async fn after_a_switch_requests_go_to_the_new_profile() {
         Effect::Fetch {
             ticket: Ticket::new(3),
             request: Request::CurrentUser,
+            log_query: None,
         },
     ]);
 

@@ -17,7 +17,11 @@ fn log_fetches(effects: &[Effect]) -> Vec<LogQuery> {
     effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::FetchLogs { query, .. } => Some(*query),
+            Effect::Fetch {
+                request: Request::Logs(_),
+                log_query,
+                ..
+            } => *log_query,
             _ => None,
         })
         .collect()
