@@ -11,7 +11,6 @@ use super::dashboard::{Pane, Resource};
 use super::detail::{short_ref, DetailTab};
 use super::status::Tone;
 use crate::api::ServiceInfo;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Confirm {
@@ -154,53 +153,42 @@ impl App {
         }
     }
 
-    /// `None` when `key` is not an action key on this screen.
-    pub(super) fn handle_action_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
-        let KeyCode::Char(character) = key.code else {
-            return None;
-        };
-        match self.resolve_action(ActionKey::from_char(character)?)? {
-            Ok(confirm) => self.overlay = Some(Overlay::Confirm(confirm)),
-            Err(unavailable) => self.show_toast(unavailable.message(), Tone::Bad),
+    /// Open the confirm modal for `key`, or say why it is unavailable. Does
+    /// nothing when the key means nothing on this screen.
+    pub(super) fn request_action(&mut self, key: ActionKey) {
+        match self.resolve_action(key) {
+            Some(Ok(confirm)) => self.overlay = Some(Overlay::Confirm(confirm)),
+            Some(Err(unavailable)) => self.show_toast(unavailable.message(), Tone::Bad),
+            None => {}
         }
-        Some(Vec::new())
     }
 
-    /// Only `y` sends the request; `n`, `Esc` and `Enter` cancel.
+    /// `y` in the confirm modal.
     ///
-    /// Polls keep running under the modal, so the action is checked again on `y`:
+    /// Polls keep running under the modal, so the action is checked again here:
     /// it is sent only if it is still allowed and still the same request.
-    pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    pub(super) fn confirm_action(&mut self) -> Vec<Effect> {
         let Some(Overlay::Confirm(confirm)) = &self.overlay else {
             return Vec::new();
         };
-        match key.code {
-            KeyCode::Char('y') => {
-                let mutation = confirm.mutation;
-                self.overlay = None;
-                match self.resolve_action(mutation.action_key()) {
-                    Some(Ok(current)) if current.mutation == mutation => {
-                        self.pending_action = Some(PendingAction::InFlight);
-                        vec![Effect::Mutate {
-                            generation: self.generation,
-                            mutation,
-                        }]
-                    }
-                    Some(Err(unavailable)) => {
-                        self.show_toast(unavailable.message(), Tone::Bad);
-                        Vec::new()
-                    }
-                    _ => {
-                        self.show_toast("The status changed, nothing was sent", Tone::Bad);
-                        Vec::new()
-                    }
-                }
+        let mutation = confirm.mutation;
+        self.overlay = None;
+        match self.resolve_action(mutation.action_key()) {
+            Some(Ok(current)) if current.mutation == mutation => {
+                self.pending_action = Some(PendingAction::InFlight);
+                vec![Effect::Mutate {
+                    generation: self.generation,
+                    mutation,
+                }]
             }
-            KeyCode::Char('n') | KeyCode::Esc | KeyCode::Enter => {
-                self.overlay = None;
+            Some(Err(unavailable)) => {
+                self.show_toast(unavailable.message(), Tone::Bad);
                 Vec::new()
             }
-            _ => Vec::new(),
+            _ => {
+                self.show_toast("The status changed, nothing was sent", Tone::Bad);
+                Vec::new()
+            }
         }
     }
 }

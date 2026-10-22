@@ -2,7 +2,8 @@ use super::action::{Action, Effect, FetchError, Mutation, Payload, ProfileEntry,
 use super::action_gate::Confirm;
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
-use super::login::{LoginState, LoginTab};
+use super::keymap::{self, Command};
+use super::login::LoginState;
 use super::poll_plan::desired_polls;
 use super::poller::Poller;
 use super::status::Tone;
@@ -469,135 +470,116 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return Vec::new();
         }
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        if control && key.code == KeyCode::Char('c') {
-            return self.quit();
+        // Ctrl+C quits from anywhere, even a text field or a pending login.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('c') => return self.quit(),
+                KeyCode::Char('z') => return Vec::new(),
+                _ => {}
+            }
         }
-        if control && key.code == KeyCode::Char('z') {
-            return Vec::new();
-        }
-        if self.overlay.is_some() {
-            return self.handle_overlay_key(key);
-        }
-        match self.screen {
-            Screen::Blocked { .. } => {
-                if key.code == KeyCode::Char('q') {
-                    return self.quit();
-                }
-                Vec::new()
-            }
-            Screen::Login(ref login) if login.navigating => {
-                if let Some(effects) = self.handle_global_key(key) {
-                    return effects;
-                }
-                if let Screen::Login(login) = &mut self.screen {
-                    if matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::Char('i')) {
-                        login.navigating = false;
-                    }
-                }
-                Vec::new()
-            }
-            Screen::Login(_) => self.handle_login_key(key),
-            Screen::Dashboard => {
-                if self.dashboard.editing_filter.is_some() {
-                    self.handle_filter_key(key);
-                    return Vec::new();
-                }
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                self.handle_dashboard_key(key);
-                Vec::new()
-            }
-            Screen::ServiceDetail(ref detail) => {
-                if detail.logs.editing_search() {
-                    self.handle_search_key(key);
-                    return Vec::new();
-                }
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                self.handle_service_key(key);
-                Vec::new()
-            }
-            Screen::DatabaseDetail(_) => {
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                if key.code == KeyCode::Esc {
-                    self.screen = Screen::Dashboard;
-                }
-                Vec::new()
-            }
+        match keymap::command_for(keymap::mode(self), &key) {
+            Some(command) => self.run_command(command, key),
+            None => Vec::new(),
         }
     }
 
-    /// Keys shared by every navigation screen. `None` when the key is not global.
-    fn handle_global_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
-        match key.code {
-            KeyCode::Char('q') => Some(self.quit()),
-            KeyCode::Char('?') => {
-                self.overlay = Some(Overlay::Help);
-                Some(Vec::new())
-            }
-            KeyCode::Char('r') => {
-                self.poller.refresh_all(self.now);
-                Some(Vec::new())
-            }
-            KeyCode::Char('P') => {
-                if self.session.env_token {
-                    self.show_toast(
-                        "Profiles are disabled: the env token overrides profiles",
-                        Tone::Bad,
-                    );
-                    return Some(Vec::new());
-                }
-                self.overlay = Some(Overlay::ProfilePicker(ProfilePicker::default()));
-                Some(vec![Effect::ListProfiles])
-            }
+    fn run_command(&mut self, command: Command, key: KeyEvent) -> Vec<Effect> {
+        let pressed_digit = match key.code {
+            KeyCode::Char(character) => Some(character),
             _ => None,
-        }
-    }
-
-    fn handle_overlay_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        if matches!(self.overlay, Some(Overlay::Confirm(_))) {
-            return self.handle_confirm_key(key);
-        }
-        let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay else {
-            // Any key closes the help overlay.
-            self.overlay = None;
-            return Vec::new();
         };
-        let count = picker.entries.as_ref().map_or(0, Vec::len);
-        match key.code {
-            KeyCode::Esc => self.overlay = None,
-            KeyCode::Char('q') => return self.quit(),
-            KeyCode::Up | KeyCode::Char('k') => picker.cursor = picker.cursor.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
-                picker.cursor = (picker.cursor + 1).min(count - 1)
+        match command {
+            Command::Quit => return self.quit(),
+            Command::OpenHelp => self.overlay = Some(Overlay::Help),
+            Command::Refresh => self.poller.refresh_all(self.now),
+            Command::OpenProfiles => return self.open_profiles(),
+            Command::Action(action_key) => self.request_action(action_key),
+            Command::CloseOverlay => self.overlay = None,
+            Command::PickerUp | Command::PickerDown => {
+                self.move_picker(command == Command::PickerDown)
             }
-            KeyCode::Enter => {
-                let chosen = picker
-                    .entries
-                    .as_ref()
-                    .and_then(|entries| entries.get(picker.cursor))
-                    .cloned();
-                if let Some(entry) = chosen {
-                    return self.switch_profile(entry);
+            Command::PickerChoose => return self.choose_profile(),
+            Command::ConfirmAction => return self.confirm_action(),
+            Command::CancelAction => self.overlay = None,
+            Command::ReturnToLoginForm => {
+                if let Screen::Login(login) = &mut self.screen {
+                    login.navigating = false;
                 }
             }
-            _ => {}
+            Command::LoginTab(_)
+            | Command::LoginFocus { .. }
+            | Command::LoginEscape
+            | Command::LoginErase
+            | Command::LoginSubmit
+            | Command::LoginType => return self.run_login_command(command, pressed_digit),
+            Command::FilterEscape
+            | Command::FilterApply
+            | Command::FilterErase
+            | Command::FilterType => self.run_filter_command(command, pressed_digit),
+            Command::SwitchPane => {
+                self.dashboard.focus = match self.dashboard.focus {
+                    Pane::Projects => Pane::Resources,
+                    Pane::Resources => Pane::Projects,
+                };
+            }
+            Command::CursorUp => self.move_cursor(self.dashboard.focus, -1),
+            Command::CursorDown => self.move_cursor(self.dashboard.focus, 1),
+            Command::FocusResources => self.dashboard.focus = Pane::Resources,
+            Command::FocusProjects => self.dashboard.focus = Pane::Projects,
+            Command::OpenResource => self.open_selected_resource(DetailTab::Overview),
+            Command::OpenResourceOnTab => {
+                if let (Some(tab), Some(Resource::Service(_))) = (
+                    pressed_digit.and_then(DetailTab::from_digit),
+                    self.dashboard.selected_resource(),
+                ) {
+                    self.open_selected_resource(tab);
+                }
+            }
+            Command::OpenFilter => self.dashboard.editing_filter = Some(self.dashboard.focus),
+            Command::BackToDashboard => self.screen = Screen::Dashboard,
+            Command::Detail(detail_command) => self.run_detail_command(detail_command, key),
         }
         Vec::new()
+    }
+
+    fn open_profiles(&mut self) -> Vec<Effect> {
+        if self.session.env_token {
+            self.show_toast(
+                "Profiles are disabled: the env token overrides profiles",
+                Tone::Bad,
+            );
+            return Vec::new();
+        }
+        self.overlay = Some(Overlay::ProfilePicker(ProfilePicker::default()));
+        vec![Effect::ListProfiles]
+    }
+
+    fn move_picker(&mut self, down: bool) {
+        let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay else {
+            return;
+        };
+        let count = picker.entries.as_ref().map_or(0, Vec::len);
+        picker.cursor = if down {
+            (picker.cursor + 1).min(count.saturating_sub(1))
+        } else {
+            picker.cursor.saturating_sub(1)
+        };
+    }
+
+    fn choose_profile(&mut self) -> Vec<Effect> {
+        let Some(Overlay::ProfilePicker(picker)) = &self.overlay else {
+            return Vec::new();
+        };
+        let chosen = picker
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.get(picker.cursor))
+            .cloned();
+        match chosen {
+            Some(entry) => self.switch_profile(entry),
+            None => Vec::new(),
+        }
     }
 
     fn switch_profile(&mut self, entry: ProfileEntry) -> Vec<Effect> {
@@ -620,7 +602,8 @@ impl App {
         }]
     }
 
-    fn handle_login_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    /// `character` is the pressed key when it was a character.
+    fn run_login_command(&mut self, command: Command, character: Option<char>) -> Vec<Effect> {
         let generation = self.generation;
         let Screen::Login(login) = &mut self.screen else {
             return Vec::new();
@@ -628,13 +611,10 @@ impl App {
         if login.submitting {
             return Vec::new();
         }
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Left if control => login.switch_tab(LoginTab::Password),
-            KeyCode::Right if control => login.switch_tab(LoginTab::ApiKey),
-            KeyCode::Tab => login.move_focus(true),
-            KeyCode::BackTab => login.move_focus(false),
-            KeyCode::Esc => {
+        match command {
+            Command::LoginTab(tab) => login.switch_tab(tab),
+            Command::LoginFocus { forward } => login.move_focus(forward),
+            Command::LoginEscape => {
                 let field = login.field_mut(login.focused_field());
                 if field.is_empty() {
                     login.navigating = true;
@@ -642,10 +622,10 @@ impl App {
                     field.clear();
                 }
             }
-            KeyCode::Backspace => {
+            Command::LoginErase => {
                 login.field_mut(login.focused_field()).pop();
             }
-            KeyCode::Enter => match login.credentials() {
+            Command::LoginSubmit => match login.credentials() {
                 Ok(credentials) => {
                     login.submitting = true;
                     login.error = None;
@@ -656,21 +636,23 @@ impl App {
                 }
                 Err(message) => login.error = Some(message.to_string()),
             },
-            KeyCode::Char(character) if !control => {
-                login.field_mut(login.focused_field()).push(character);
-                login.error = None;
+            Command::LoginType => {
+                if let Some(character) = character {
+                    login.field_mut(login.focused_field()).push(character);
+                    login.error = None;
+                }
             }
             _ => {}
         }
         Vec::new()
     }
 
-    fn handle_filter_key(&mut self, key: KeyEvent) {
+    fn run_filter_command(&mut self, command: Command, character: Option<char>) {
         let Some(pane) = self.dashboard.editing_filter else {
             return;
         };
-        match key.code {
-            KeyCode::Esc => {
+        match command {
+            Command::FilterEscape => {
                 let filter = self.dashboard.filter_mut(pane);
                 if filter.is_empty() {
                     self.dashboard.editing_filter = None;
@@ -678,45 +660,18 @@ impl App {
                     filter.clear();
                 }
             }
-            KeyCode::Enter => self.dashboard.editing_filter = None,
-            KeyCode::Backspace => {
+            Command::FilterApply => self.dashboard.editing_filter = None,
+            Command::FilterErase => {
                 self.dashboard.filter_mut(pane).pop();
             }
-            KeyCode::Char(character) => self.dashboard.filter_mut(pane).push(character),
-            _ => {}
-        }
-        self.dashboard.normalize_selection();
-    }
-
-    fn handle_dashboard_key(&mut self, key: KeyEvent) {
-        let focus = self.dashboard.focus;
-        match key.code {
-            KeyCode::Tab
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Char('h')
-            | KeyCode::Char('l') => {
-                self.dashboard.focus = match focus {
-                    Pane::Projects => Pane::Resources,
-                    Pane::Resources => Pane::Projects,
-                };
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_cursor(focus, -1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_cursor(focus, 1),
-            KeyCode::Enter if focus == Pane::Projects => self.dashboard.focus = Pane::Resources,
-            KeyCode::Enter => self.open_selected_resource(DetailTab::Overview),
-            KeyCode::Esc if focus == Pane::Resources => self.dashboard.focus = Pane::Projects,
-            KeyCode::Char('/') => self.dashboard.editing_filter = Some(focus),
-            KeyCode::Char(digit @ '1'..='3') if focus == Pane::Resources => {
-                if let (Some(tab), Some(Resource::Service(_))) = (
-                    DetailTab::from_digit(digit),
-                    self.dashboard.selected_resource(),
-                ) {
-                    self.open_selected_resource(tab);
+            Command::FilterType => {
+                if let Some(character) = character {
+                    self.dashboard.filter_mut(pane).push(character);
                 }
             }
             _ => {}
         }
+        self.dashboard.normalize_selection();
     }
 
     fn open_selected_resource(&mut self, tab: DetailTab) {

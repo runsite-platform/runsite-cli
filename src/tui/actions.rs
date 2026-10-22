@@ -31,7 +31,7 @@ impl Unavailable {
 }
 
 /// An uppercase key that changes remote state. Every place that names, hints
-/// or explains these keys reads it from here.
+/// or explains these keys reads it from here; `keymap` binds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionKey {
     Deploy,
@@ -41,17 +41,7 @@ pub enum ActionKey {
 }
 
 impl ActionKey {
-    pub fn from_char(key: char) -> Option<Self> {
-        match key {
-            'D' => Some(Self::Deploy),
-            'R' => Some(Self::Restart),
-            'S' => Some(Self::StartStop),
-            'B' => Some(Self::Rollback),
-            _ => None,
-        }
-    }
-
-    pub fn key(self) -> &'static str {
+    pub const fn key(self) -> &'static str {
         match self {
             Self::Deploy => "D",
             Self::Restart => "R",
@@ -71,7 +61,7 @@ impl ActionKey {
     }
 
     /// The status bar hint while the action's direction is unknown.
-    pub fn hint(self) -> &'static str {
+    pub const fn hint(self) -> &'static str {
         match self {
             Self::Deploy => "deploy",
             Self::Restart => "restart",
@@ -80,7 +70,7 @@ impl ActionKey {
         }
     }
 
-    pub fn help(self) -> &'static str {
+    pub const fn help(self) -> &'static str {
         match self {
             Self::Deploy => "deploy (rebuild)",
             Self::Restart => "restart",

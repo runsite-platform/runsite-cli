@@ -5,6 +5,7 @@ mod app;
 mod dashboard;
 mod detail;
 mod detail_keys;
+mod keymap;
 mod log_buffer;
 mod login;
 mod poll_plan;

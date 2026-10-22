@@ -41,4 +41,4 @@ expression: screen
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" enter details · B rollback · D deploy · esc back · ? help                                               updated 0s ago "
+" enter details · B rollback · D deploy · esc back · ? help · R restart · S stop                          updated 0s ago "
