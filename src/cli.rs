@@ -8,8 +8,9 @@ use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
     propagate_version = true
 )]
 pub struct Cli {
+    /// Without a subcommand, an interactive terminal opens the TUI
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 
     /// Output format
     #[arg(long, global = true, default_value = "text")]
@@ -29,6 +30,9 @@ pub enum OutputFormat {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Open the interactive terminal UI
+    Ui,
+
     /// Authenticate with RunSite
     Login {
         /// Use an API key from the dashboard instead of email + password
@@ -66,7 +70,7 @@ pub enum Commands {
         service: Option<String>,
 
         /// Number of recent log lines to show
-        #[arg(long, short, default_value = "100")]
+        #[arg(long, short, default_value = "100", value_parser = clap::value_parser!(u32).range(1..=10000))]
         tail: u32,
     },
 

@@ -62,7 +62,7 @@ pub async fn use_project(
         let mut cfg = config.lock().unwrap();
         let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
         profile.current_project_id = Some(project_id.to_string());
-        config::save(&cfg)?;
+        config::save_profile(&cfg, profile_name)?;
     }
 
     println!("Switched to project {}", project_name_or_id);
@@ -77,7 +77,7 @@ pub fn unset_project(config: Arc<Mutex<Config>>, profile_name: &str) -> Result<(
             println!("No project selected.");
             return Ok(());
         }
-        config::save(&cfg)?;
+        config::save_profile(&cfg, profile_name)?;
     }
 
     println!("Project context cleared.");

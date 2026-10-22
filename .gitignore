@@ -31,3 +31,6 @@ desktop.ini
 # Logs and temp files
 *.log
 /tmp/
+
+# Pending insta snapshots
+*.snap.new

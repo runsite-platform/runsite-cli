@@ -1,4 +1,7 @@
+mod login;
+mod resources;
 mod types;
+pub use login::Credentials;
 pub use types::*;
 
 use crate::config::Config;
@@ -18,10 +21,15 @@ pub fn belongs_to_project(service: &WebService, project_id: Option<&str>) -> boo
     }
 }
 
-/// Error `detail` is a plain string, or for 422 a list of `{loc, msg}` entries.
+/// Error `detail` is a plain string, a `{code, ...}` object, or for 422 a list
+/// of `{loc, msg}` entries.
 fn describe_error_detail(detail: &Value) -> Option<String> {
     if let Some(text) = detail.as_str() {
         return Some(text.to_string());
+    }
+
+    if detail.is_object() {
+        return describe_structured_detail(detail);
     }
 
     let problems: Vec<String> = detail
@@ -41,6 +49,41 @@ fn describe_error_detail(detail: &Value) -> Option<String> {
         .collect();
 
     (!problems.is_empty()).then(|| problems.join("; "))
+}
+
+/// The `detail` field of an error body. A body that is not an object (a proxy
+/// answering with a bare string or array) has none.
+fn take_detail(mut body: Value) -> Value {
+    body.get_mut("detail")
+        .map(Value::take)
+        .unwrap_or(Value::Null)
+}
+
+fn describe_structured_detail(detail: &Value) -> Option<String> {
+    let field = |key: &str| detail.get(key).and_then(Value::as_str);
+    let message = match field("code")? {
+        "insufficient_scope" => {
+            let required = field("required").unwrap_or("?");
+            let mut message = format!(
+                "This action needs a `{}` key (yours: `{}`)",
+                required,
+                field("actual").unwrap_or("?")
+            );
+            if required == "admin" {
+                message.push_str(
+                    ". Create an admin API key in the dashboard and run `runsite login --token <key>`",
+                );
+            }
+            message
+        }
+        "user_blocked" => match field("reason").filter(|reason| !reason.is_empty()) {
+            Some(reason) => format!("Your account is blocked: {}", reason),
+            None => "Your account is blocked".to_string(),
+        },
+        "registration_review_required" => "Your account is awaiting review".to_string(),
+        other => other.to_string(),
+    };
+    Some(message)
 }
 
 fn match_id_prefix(ids: &[Uuid], prefix: &str) -> Result<Uuid> {
@@ -87,7 +130,7 @@ impl ApiClient {
             .expect("failed to build HTTP client");
         Self {
             http,
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
             config,
             profile_name,
         }
@@ -101,6 +144,11 @@ impl ApiClient {
             .profiles
             .get(&self.profile_name)
             .and_then(|p| p.current_project_id.clone())
+    }
+
+    /// True when `RUNSITE_API_TOKEN` overrides the profile's saved key.
+    pub fn uses_env_token(&self) -> bool {
+        std::env::var("RUNSITE_API_TOKEN").is_ok()
     }
 
     fn auth_token(&self) -> Option<String> {
@@ -133,16 +181,20 @@ impl ApiClient {
                 .await
                 .context("failed to parse response")
         } else {
-            let message = response
+            let detail = response
                 .json::<Value>()
                 .await
                 .ok()
-                .and_then(|body| describe_error_detail(&body["detail"]))
-                .unwrap_or_else(|| status.to_string());
+                .map(take_detail)
+                .unwrap_or(Value::Null);
+            let message = describe_error_detail(&detail).unwrap_or_else(|| status.to_string());
+            let code = detail["code"].as_str().map(str::to_string);
 
             Err(ApiError::Http {
                 status: status.as_u16(),
                 message,
+                code,
+                detail: detail.is_object().then_some(detail),
             }
             .into())
         }
@@ -406,6 +458,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_trailing_slash_in_the_api_url_is_dropped() {
+        let client = ApiClient::new(
+            "https://api.runsite.app/".to_string(),
+            Arc::new(Mutex::new(Config::default())),
+            "default".to_string(),
+        );
+        assert_eq!(client.base_url, "https://api.runsite.app");
+    }
+
     const PROJECT: &str = "ca83c4a9-1517-4fe3-93aa-bbdab4eaee23";
     const OTHER_PROJECT: &str = "8d5b5e8e-2348-4a29-8c05-bcfa1e599ef2";
 
@@ -460,6 +522,65 @@ mod tests {
             describe_error_detail(&detail).as_deref(),
             Some("Web service not found")
         );
+    }
+
+    #[test]
+    fn an_error_body_that_is_not_an_object_has_no_detail() {
+        assert_eq!(take_detail(serde_json::json!("Bad Gateway")), Value::Null);
+        assert_eq!(take_detail(serde_json::json!(["x"])), Value::Null);
+        assert_eq!(
+            take_detail(serde_json::json!({"detail": "Not found"})),
+            serde_json::json!("Not found")
+        );
+    }
+
+    #[test]
+    fn an_insufficient_scope_detail_names_both_scopes() {
+        let detail = serde_json::json!({"code": "insufficient_scope", "required": "write", "actual": "read"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "This action needs a `write` key (yours: `read`)"
+        );
+    }
+
+    #[test]
+    fn an_admin_scope_detail_explains_how_to_get_an_admin_key() {
+        let detail = serde_json::json!({"code": "insufficient_scope", "required": "admin", "actual": "write"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "This action needs a `admin` key (yours: `write`). Create an admin API key in the dashboard and run `runsite login --token <key>`"
+        );
+    }
+
+    #[test]
+    fn a_blocked_user_detail_carries_the_reason() {
+        let detail = serde_json::json!({"code": "user_blocked", "reason": "unpaid invoice"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "Your account is blocked: unpaid invoice"
+        );
+        let without_reason = serde_json::json!({"code": "user_blocked", "reason": ""});
+        assert_eq!(
+            describe_error_detail(&without_reason).unwrap(),
+            "Your account is blocked"
+        );
+    }
+
+    #[test]
+    fn a_registration_review_detail_is_explained() {
+        let detail =
+            serde_json::json!({"code": "registration_review_required", "status": "pending"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "Your account is awaiting review"
+        );
+    }
+
+    #[test]
+    fn an_unknown_structured_detail_falls_back_to_its_code() {
+        let detail = serde_json::json!({"code": "quota_exceeded"});
+        assert_eq!(describe_error_detail(&detail).unwrap(), "quota_exceeded");
+        assert_eq!(describe_error_detail(&serde_json::json!({"x": 1})), None);
     }
 
     #[test]

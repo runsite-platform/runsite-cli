@@ -1,8 +1,8 @@
 // Dormant under API-key auth: the shell WebSocket is JWT-only. Kept for future rewiring.
 #![allow(dead_code)]
 use anyhow::Result;
-use crossterm::terminal;
 use futures_util::{SinkExt, StreamExt};
+use ratatui::crossterm::terminal;
 use serde_json::Value;
 use std::io::Write;
 use tokio::io::AsyncReadExt;
