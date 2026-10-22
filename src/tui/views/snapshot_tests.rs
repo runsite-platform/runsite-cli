@@ -133,7 +133,7 @@ fn compact_header_under_twenty_rows() {
     let app = loaded_dashboard();
     let screen = render_text(&app, &unicode(), 120, 18);
     assert!(screen.contains("RunSite CLI v"));
-    assert!(!screen.contains("█▀▄"));
+    assert!(!screen.contains("█▀▀▀▄"));
     assert_snapshot!(screen);
 }
 

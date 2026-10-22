@@ -36,19 +36,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         return;
     }
 
-    let [logo_top, logo_bottom] = theme.logo();
-    let indent = " ".repeat(logo_top.chars().count() + 3);
+    let [logo_top, logo_middle, logo_bottom] = theme.logo();
     let lines = vec![
         Line::from(vec![
             Span::styled(format!(" {logo_top}  "), theme.accent()),
             title,
         ]),
         Line::from(vec![
-            Span::styled(format!(" {logo_bottom}  "), theme.accent()),
+            Span::styled(format!(" {logo_middle}  "), theme.accent()),
             Span::raw(identity(app, theme)),
         ]),
         Line::from(vec![
-            Span::raw(indent),
+            Span::styled(format!(" {logo_bottom}  "), theme.accent()),
             Span::styled(app.session.api_url.clone(), theme.muted()),
         ]),
     ];

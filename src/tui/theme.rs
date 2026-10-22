@@ -188,11 +188,11 @@ impl Theme {
         }
     }
 
-    pub fn logo(&self) -> [&'static str; 2] {
+    pub fn logo(&self) -> [&'static str; 3] {
         if self.ascii {
-            ["[RS]", "    "]
+            ["[R]", "   ", "   "]
         } else {
-            ["█▀▄ █▀▀", "█▀▄ ▄▄█"]
+            ["█▀▀▀▄", "█▄▄▄▀", "█  ▀▄"]
         }
     }
 }
