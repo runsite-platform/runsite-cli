@@ -1,11 +1,11 @@
 //! `runsite upgrade`: download the latest release, verify it and replace this binary.
 
+use super::artifact::{ArchiveKind, Artifact, CHECKSUMS_FILE};
+use super::notice::update_available;
 use super::{
-    archive_name, download, http_client, is_newer, notice, release_target, Release, ReleaseSource,
-    CURRENT_VERSION,
+    download, http_client, is_newer, notice, version_of, Release, ReleaseSource, CURRENT_VERSION,
 };
-use crate::cli::OutputFormat;
-use crate::output::{emit, Report};
+use crate::output::Report;
 use anyhow::{Context, Result};
 use colored::Colorize;
 use serde::Serialize;
@@ -16,106 +16,115 @@ use std::time::Duration;
 
 const MAX_ARCHIVE_BYTES: usize = 200 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES: usize = 1024 * 1024;
-const CHECKSUMS_FILE: &str = "SHA256SUMS.txt";
 
-#[cfg(windows)]
-const BINARY_NAME: &str = "runsite.exe";
-#[cfg(not(windows))]
-const BINARY_NAME: &str = "runsite";
-
-#[derive(Serialize)]
-struct UpdateStatus {
-    current_version: String,
-    latest_version: String,
-    update_available: bool,
+/// What `runsite upgrade` reports: the versions for `--check`, else the outcome.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum UpgradeReport {
+    Status {
+        current_version: String,
+        latest_version: String,
+        update_available: bool,
+    },
+    Outcome {
+        previous_version: String,
+        current_version: String,
+        updated: bool,
+    },
 }
 
-impl Report for UpdateStatus {
+impl Report for UpgradeReport {
     fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
-        if self.update_available {
-            writeln!(
+        match self {
+            UpgradeReport::Status {
+                current_version,
+                latest_version,
+                update_available: true,
+            } => writeln!(out, "{}", update_available(current_version, latest_version)),
+            UpgradeReport::Status {
+                current_version, ..
+            } => writeln!(out, "runsite v{current_version} is up to date"),
+            UpgradeReport::Outcome {
+                previous_version,
+                current_version,
+                updated: true,
+            } => writeln!(
                 out,
-                "Update available: v{} → v{}\nRun `runsite upgrade` to install it.",
-                self.current_version, self.latest_version
-            )
-        } else {
-            writeln!(out, "runsite v{} is up to date", self.current_version)
+                "{} runsite v{previous_version} → v{current_version}",
+                "Updated".green()
+            ),
+            UpgradeReport::Outcome {
+                current_version, ..
+            } => writeln!(
+                out,
+                "runsite v{current_version} is already the latest version"
+            ),
         }
     }
 }
 
-#[derive(Serialize)]
-struct UpgradeResult {
-    previous_version: String,
-    current_version: String,
-    updated: bool,
+/// What to do once the latest release is known.
+#[derive(Debug, PartialEq)]
+enum Decision {
+    Report(UpgradeReport),
+    Install,
 }
 
-impl Report for UpgradeResult {
-    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
-        if self.updated {
-            writeln!(
-                out,
-                "{} runsite v{} → v{}",
-                "Updated".green(),
-                self.previous_version,
-                self.current_version
-            )
-        } else {
-            writeln!(
-                out,
-                "runsite v{} is already the latest version",
-                self.current_version
-            )
-        }
+fn decide(latest_tag: &str, current: &str, check_only: bool) -> Decision {
+    let latest_version = version_of(latest_tag).to_string();
+    let update_available = is_newer(latest_tag, current);
+    if check_only {
+        return Decision::Report(UpgradeReport::Status {
+            current_version: current.to_string(),
+            latest_version,
+            update_available,
+        });
     }
+    if !update_available {
+        return Decision::Report(UpgradeReport::Outcome {
+            previous_version: current.to_string(),
+            current_version: current.to_string(),
+            updated: false,
+        });
+    }
+    Decision::Install
 }
 
-pub async fn upgrade(check_only: bool, format: OutputFormat) -> Result<()> {
+pub async fn upgrade(check_only: bool) -> Result<UpgradeReport> {
     let client = http_client(Duration::from_secs(120))?;
     let release = ReleaseSource::github().latest(&client).await?;
     notice::record_check(Some(&release.tag_name));
-
-    let latest_version = release.tag_name.trim_start_matches('v').to_string();
-    let update_available = is_newer(&release.tag_name, CURRENT_VERSION);
-
-    if check_only {
-        let status = UpdateStatus {
-            current_version: CURRENT_VERSION.to_string(),
-            latest_version: latest_version.clone(),
-            update_available,
-        };
-        return emit(format, &status);
+    match decide(&release.tag_name, CURRENT_VERSION, check_only) {
+        Decision::Report(report) => Ok(report),
+        Decision::Install => install(&client, &release).await,
     }
+}
 
-    if !update_available {
-        return emit(
-            format,
-            &UpgradeResult {
-                previous_version: CURRENT_VERSION.to_string(),
-                current_version: CURRENT_VERSION.to_string(),
-                updated: false,
-            },
-        );
-    }
-
+/// Replace the running binary with `release`, after checking it is ours to
+/// replace and that the new one is intact and runs.
+async fn install(client: &reqwest::Client, release: &Release) -> Result<UpgradeReport> {
     let current_exe = std::env::current_exe()
         .and_then(|path| path.canonicalize())
         .context("cannot locate the running runsite binary")?;
     refuse_unmanaged_install(&current_exe, cargo_home().as_deref())?;
 
-    let target = release_target().context(
+    let artifact = Artifact::current().context(
         "there is no prebuilt runsite binary for this platform; build it from source instead",
     )?;
+    let latest_version = version_of(&release.tag_name).to_string();
 
-    eprintln!("Downloading runsite {} for {target}…", release.tag_name);
-    let staged = prepare_binary(&client, &release, target, &latest_version).await?;
+    eprintln!(
+        "Downloading runsite {} for {}…",
+        release.tag_name, artifact.target
+    );
+    let staged = prepare_binary(client, release, artifact, &latest_version).await?;
 
     self_replace::self_replace(staged.path()).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             anyhow::anyhow!(
-                "no permission to replace {}. Re-run with the rights to write there, or reinstall:\n  curl -fsSL https://runsite.app/install.sh | sh",
-                current_exe.display()
+                "no permission to replace {}. Re-run with the rights to write there, or reinstall:\n  {}",
+                current_exe.display(),
+                artifact.reinstall_command()
             )
         } else {
             anyhow::Error::new(error)
@@ -123,14 +132,11 @@ pub async fn upgrade(check_only: bool, format: OutputFormat) -> Result<()> {
         }
     })?;
 
-    emit(
-        format,
-        &UpgradeResult {
-            previous_version: CURRENT_VERSION.to_string(),
-            current_version: latest_version,
-            updated: true,
-        },
-    )
+    Ok(UpgradeReport::Outcome {
+        previous_version: CURRENT_VERSION.to_string(),
+        current_version: latest_version,
+        updated: true,
+    })
 }
 
 /// A downloaded, verified binary that ran once, waiting in a temporary
@@ -151,15 +157,15 @@ impl StagedBinary {
 async fn prepare_binary(
     client: &reqwest::Client,
     release: &Release,
-    target: &str,
+    artifact: Artifact,
     expected_version: &str,
 ) -> Result<StagedBinary> {
-    let binary = download_verified_binary(client, release, target).await?;
+    let binary = download_verified_binary(client, release, artifact).await?;
     let directory = tempfile::Builder::new()
         .prefix("runsite-upgrade")
         .tempdir()
         .context("cannot create a temporary directory")?;
-    let path = directory.path().join(BINARY_NAME);
+    let path = directory.path().join(artifact.binary_name());
     write_executable(&path, &binary)?;
     check_binary_runs(&path, expected_version).await?;
     Ok(StagedBinary {
@@ -201,13 +207,14 @@ fn is_cargo_install(current_exe: &Path, cargo_home: Option<&Path>) -> bool {
     current_exe.parent() == Some(cargo_bin.as_path())
 }
 
-/// Download this platform's archive, check it against SHA256SUMS.txt and unpack the binary.
-pub async fn download_verified_binary(
+/// Download `artifact`'s archive, check it against the release checksums and unpack the binary.
+async fn download_verified_binary(
     client: &reqwest::Client,
     release: &Release,
-    target: &str,
+    artifact: Artifact,
 ) -> Result<Vec<u8>> {
-    let archive = archive_name(&release.tag_name, target);
+    let target = artifact.target;
+    let archive = artifact.archive_name(&release.tag_name);
     let archive_asset = release.asset(&archive).with_context(|| {
         format!(
             "release {} has no build for {target} ({archive})",
@@ -244,10 +251,9 @@ pub async fn download_verified_binary(
         );
     }
 
-    if archive.ends_with(".zip") {
-        extract_from_zip(&archive_bytes, "runsite.exe")
-    } else {
-        extract_from_tar_gz(&archive_bytes, "runsite")
+    match artifact.archive {
+        ArchiveKind::Zip => extract_from_zip(&archive_bytes, artifact.binary_name()),
+        ArchiveKind::TarGz => extract_from_tar_gz(&archive_bytes, artifact.binary_name()),
     }
 }
 
@@ -333,7 +339,11 @@ async fn check_binary_runs(path: &Path, expected_version: &str) -> Result<()> {
             "the downloaded binary does not run on this system; keeping the current version",
         )?;
     let reported = String::from_utf8_lossy(&result.stdout);
-    if !result.status.success() || !reported.contains(expected_version) {
+    // `runsite --version` prints `runsite 0.4.0`; a substring match would take 10.4.0 too.
+    let reports_expected = reported
+        .split_whitespace()
+        .any(|word| version_of(word) == expected_version);
+    if !result.status.success() || !reports_expected {
         anyhow::bail!(
             "the downloaded binary reports `{}` instead of v{expected_version}; keeping the current version",
             reported.trim()
@@ -350,7 +360,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    const TARGET: &str = "x86_64-unknown-linux-musl";
+    const TARGET: Artifact = crate::update::artifact::ALL[0];
 
     fn tar_gz_with(file_name: &str, contents: &[u8]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -367,7 +377,7 @@ mod tests {
 
     async fn serve_release(archive_bytes: Vec<u8>, checksums: String) -> (MockServer, Release) {
         let server = MockServer::start().await;
-        let archive = archive_name("v9.9.9", TARGET);
+        let archive = TARGET.archive_name("v9.9.9");
         Mock::given(method("GET"))
             .and(path(format!("/{archive}")))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(archive_bytes))
@@ -400,7 +410,7 @@ mod tests {
         let checksums = format!(
             "{}  {}\n",
             sha256_hex(&archive_bytes),
-            archive_name("v9.9.9", TARGET)
+            TARGET.archive_name("v9.9.9")
         );
         let (_server, release) = serve_release(archive_bytes, checksums).await;
 
@@ -417,7 +427,7 @@ mod tests {
         let checksums = format!(
             "{}  {}\n",
             sha256_hex(b"something else"),
-            archive_name("v9.9.9", TARGET)
+            TARGET.archive_name("v9.9.9")
         );
         let (_server, release) = serve_release(archive_bytes, checksums).await;
 
@@ -432,7 +442,7 @@ mod tests {
     async fn rejects_a_release_without_this_platform() {
         let (_server, release) = serve_release(Vec::new(), String::new()).await;
         let client = http_client(Duration::from_secs(5)).unwrap();
-        let error = download_verified_binary(&client, &release, "aarch64-apple-darwin")
+        let error = download_verified_binary(&client, &release, crate::update::artifact::ALL[3])
             .await
             .unwrap_err();
         assert!(error
@@ -505,7 +515,7 @@ mod tests {
         let checksums = format!(
             "{}  {}\n",
             sha256_hex(&archive_bytes),
-            archive_name("v9.9.9", TARGET)
+            TARGET.archive_name("v9.9.9")
         );
         (archive_bytes, checksums)
     }
@@ -521,6 +531,59 @@ mod tests {
             .await
             .unwrap();
         assert!(staged.path().is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_binary_whose_version_only_contains_the_expected_one_is_not_staged() {
+        let (archive_bytes, checksums) = release_of_script("19.9.9");
+        let (_server, release) = serve_release(archive_bytes, checksums).await;
+        let client = http_client(Duration::from_secs(5)).unwrap();
+
+        let error = prepare_binary(&client, &release, TARGET, "9.9.9")
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("instead of v9.9.9"), "{error}");
+    }
+
+    #[test]
+    fn check_only_reports_both_versions() {
+        let decision = decide("v9.9.9", "0.3.0", true);
+        let Decision::Report(report) = decision else {
+            panic!("expected a report");
+        };
+        assert_eq!(
+            crate::output::render_json(&report),
+            serde_json::json!({
+                "current_version": "0.3.0", "latest_version": "9.9.9", "update_available": true
+            })
+        );
+        assert!(crate::output::render_text(&report).contains("v0.3.0 → v9.9.9"));
+    }
+
+    #[test]
+    fn an_up_to_date_binary_is_left_alone() {
+        let Decision::Report(report) = decide("v0.3.0", "0.3.0", false) else {
+            panic!("expected a report");
+        };
+        assert_eq!(
+            crate::output::render_text(&report),
+            "runsite v0.3.0 is already the latest version\n"
+        );
+    }
+
+    #[test]
+    fn a_newer_release_is_installed() {
+        assert_eq!(decide("v0.4.0", "0.3.0", false), Decision::Install);
+    }
+
+    #[test]
+    fn the_reinstall_hint_matches_the_platform() {
+        assert!(TARGET.reinstall_command().contains("install.sh"));
+        assert!(crate::update::artifact::ALL[4]
+            .reinstall_command()
+            .contains("install.ps1"));
     }
 
     #[cfg(unix)]

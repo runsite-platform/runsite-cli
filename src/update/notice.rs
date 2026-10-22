@@ -1,6 +1,6 @@
 //! Once a day, check GitHub in the background and mention a newer release on stderr.
 
-use super::{http_client, is_newer, ReleaseSource, CURRENT_VERSION};
+use super::{http_client, is_newer, version_of, ReleaseSource, CURRENT_VERSION};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::io::IsTerminal;
@@ -87,10 +87,17 @@ impl UpdateNotifier {
 
 /// Whether this run may print the notice: never in CI, scripts, JSON output or when opted out.
 pub fn should_check(json_output: bool) -> bool {
-    let opted_out = std::env::var_os("RUNSITE_NO_UPDATE_CHECK")
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    let in_ci = std::env::var_os("CI").is_some_and(|value| !value.is_empty() && value != "false");
-    !opted_out && !in_ci && !json_output && std::io::stderr().is_terminal()
+    !json_output
+        && std::io::stderr().is_terminal()
+        && allowed_by_env(|name| std::env::var(name).ok())
+}
+
+/// `RUNSITE_NO_UPDATE_CHECK` opts out; so does running under CI.
+fn allowed_by_env(variable: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |name: &str, off: &str| {
+        variable(name).is_some_and(|value| !value.is_empty() && value != off)
+    };
+    !set("RUNSITE_NO_UPDATE_CHECK", "0") && !set("CI", "false")
 }
 
 /// Remember a result found by `runsite upgrade`, so the notice agrees with it.
@@ -107,14 +114,18 @@ pub fn record_check(latest_version: Option<&str>) {
 }
 
 fn notice_text(latest: &str, current: &str) -> Option<String> {
-    is_newer(latest, current).then(|| {
-        let latest = latest.trim_start_matches('v');
-        format!(
-            "{} runsite v{current} → v{latest}\nRun `{}` to update.",
-            "Update available:".yellow(),
-            "runsite upgrade".bold()
-        )
-    })
+    is_newer(latest, current).then(|| update_available(current, latest))
+}
+
+/// Shared by the notice and `runsite upgrade --check`.
+pub fn update_available(current: &str, latest: &str) -> String {
+    format!(
+        "{} runsite v{} → v{}\nRun `{}` to update.",
+        "Update available:".yellow(),
+        version_of(current),
+        version_of(latest),
+        "runsite upgrade".bold()
+    )
 }
 
 async fn check_latest(source: &ReleaseSource) -> Option<String> {
@@ -258,6 +269,24 @@ mod tests {
                 latest_version: Some("v0.0.1".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn ci_and_the_opt_out_silence_the_notice() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        assert!(allowed_by_env(env(&[])));
+        assert!(!allowed_by_env(env(&[("CI", "true")])));
+        assert!(allowed_by_env(env(&[("CI", "false")])));
+        assert!(!allowed_by_env(env(&[("RUNSITE_NO_UPDATE_CHECK", "1")])));
+        assert!(allowed_by_env(env(&[("RUNSITE_NO_UPDATE_CHECK", "0")])));
+        assert!(allowed_by_env(env(&[("RUNSITE_NO_UPDATE_CHECK", "")])));
     }
 
     #[test]

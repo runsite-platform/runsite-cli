@@ -71,7 +71,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Needs no config, so a broken config.toml can still be fixed by upgrading.
     if let Some(Commands::Upgrade { check }) = cli.command {
-        return update::install::upgrade(check, cli.output).await;
+        return output::emit(cli.output, &update::install::upgrade(check).await?);
     }
 
     let config_file = config::ConfigFile::locate()?;

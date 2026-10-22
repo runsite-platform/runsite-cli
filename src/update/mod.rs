@@ -1,5 +1,6 @@
 //! Self-update: `runsite upgrade` and the once-a-day "new version" notice.
 
+pub mod artifact;
 pub mod install;
 pub mod notice;
 
@@ -110,8 +111,7 @@ async fn fetch_latest_release(
 
 /// `major.minor.patch` from a tag like `v0.4.0`; pre-release suffixes are ignored.
 pub fn parse_version(tag: &str) -> Option<(u64, u64, u64)> {
-    let core = tag.trim().trim_start_matches('v');
-    let core = core.split(['-', '+']).next()?;
+    let core = version_of(tag).split(['-', '+']).next()?;
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -129,30 +129,9 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// The release target this binary was built for, as named in release archives.
-pub fn release_target() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("x86_64-unknown-linux-musl")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Some("aarch64-unknown-linux-musl")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("x86_64-apple-darwin")
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("aarch64-apple-darwin")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("x86_64-pc-windows-msvc")
-    } else {
-        None
-    }
-}
-
-pub fn archive_name(tag: &str, target: &str) -> String {
-    let extension = if target.contains("windows") {
-        "zip"
-    } else {
-        "tar.gz"
-    };
-    format!("runsite-{tag}-{target}.{extension}")
+/// The version a tag names: `v0.4.0` is `0.4.0`.
+pub fn version_of(tag: &str) -> &str {
+    tag.trim().trim_start_matches('v')
 }
 
 /// Download a file into memory, refusing anything larger than `max_bytes`.
@@ -198,24 +177,6 @@ mod tests {
         assert_eq!(parse_version("v0.4.0-rc.1"), Some((0, 4, 0)));
         assert_eq!(parse_version("0.4"), None);
         assert_eq!(parse_version("1.2.3.4"), None);
-    }
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    #[test]
-    fn this_platform_has_a_release_build() {
-        assert_eq!(release_target(), Some("x86_64-unknown-linux-musl"));
-    }
-
-    #[test]
-    fn archive_names_match_the_release_workflow() {
-        assert_eq!(
-            archive_name("v0.4.0", "x86_64-unknown-linux-musl"),
-            "runsite-v0.4.0-x86_64-unknown-linux-musl.tar.gz"
-        );
-        assert_eq!(
-            archive_name("v0.4.0", "x86_64-pc-windows-msvc"),
-            "runsite-v0.4.0-x86_64-pc-windows-msvc.zip"
-        );
     }
 
     #[tokio::test]
