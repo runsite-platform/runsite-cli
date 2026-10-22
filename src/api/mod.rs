@@ -62,11 +62,20 @@ fn take_detail(mut body: Value) -> Value {
 fn describe_structured_detail(detail: &Value) -> Option<String> {
     let field = |key: &str| detail.get(key).and_then(Value::as_str);
     let message = match field("code")? {
-        "insufficient_scope" => format!(
-            "This action needs a `{}` key (yours: `{}`)",
-            field("required").unwrap_or("?"),
-            field("actual").unwrap_or("?")
-        ),
+        "insufficient_scope" => {
+            let required = field("required").unwrap_or("?");
+            let mut message = format!(
+                "This action needs a `{}` key (yours: `{}`)",
+                required,
+                field("actual").unwrap_or("?")
+            );
+            if required == "admin" {
+                message.push_str(
+                    ". Create an admin API key in the dashboard and run `runsite login --token <key>`",
+                );
+            }
+            message
+        }
         "user_blocked" => match field("reason").filter(|reason| !reason.is_empty()) {
             Some(reason) => format!("Your account is blocked: {}", reason),
             None => "Your account is blocked".to_string(),
@@ -121,7 +130,7 @@ impl ApiClient {
             .expect("failed to build HTTP client");
         Self {
             http,
-            base_url,
+            base_url: base_url.trim_end_matches('/').to_string(),
             config,
             profile_name,
         }
@@ -449,6 +458,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_trailing_slash_in_the_api_url_is_dropped() {
+        let client = ApiClient::new(
+            "https://api.runsite.app/".to_string(),
+            Arc::new(Mutex::new(Config::default())),
+            "default".to_string(),
+        );
+        assert_eq!(client.base_url, "https://api.runsite.app");
+    }
+
     const PROJECT: &str = "ca83c4a9-1517-4fe3-93aa-bbdab4eaee23";
     const OTHER_PROJECT: &str = "8d5b5e8e-2348-4a29-8c05-bcfa1e599ef2";
 
@@ -521,6 +540,15 @@ mod tests {
         assert_eq!(
             describe_error_detail(&detail).unwrap(),
             "This action needs a `write` key (yours: `read`)"
+        );
+    }
+
+    #[test]
+    fn an_admin_scope_detail_explains_how_to_get_an_admin_key() {
+        let detail = serde_json::json!({"code": "insufficient_scope", "required": "admin", "actual": "write"});
+        assert_eq!(
+            describe_error_detail(&detail).unwrap(),
+            "This action needs a `admin` key (yours: `write`). Create an admin API key in the dashboard and run `runsite login --token <key>`"
         );
     }
 

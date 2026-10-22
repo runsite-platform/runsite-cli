@@ -49,7 +49,7 @@ pub fn set_url(config: Arc<Mutex<Config>>, profile_name: &str, url: &str) -> Res
     {
         let mut cfg = config.lock().unwrap();
         let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
-        profile.api_url = url.to_string();
+        profile.api_url = url.trim_end_matches('/').to_string();
         config::save_profile(&cfg, profile_name)?;
     }
     println!("API URL set to {}", url);

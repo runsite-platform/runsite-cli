@@ -70,7 +70,7 @@ pub enum Commands {
         service: Option<String>,
 
         /// Number of recent log lines to show
-        #[arg(long, short, default_value = "100")]
+        #[arg(long, short, default_value = "100", value_parser = clap::value_parser!(u32).range(1..=10000))]
         tail: u32,
     },
 
