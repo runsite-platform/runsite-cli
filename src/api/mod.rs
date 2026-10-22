@@ -5,6 +5,7 @@ mod login;
 mod lookup;
 mod projects;
 mod services;
+mod status;
 #[cfg(test)]
 pub mod test_support;
 mod types;
@@ -13,6 +14,7 @@ pub use databases::{DatabaseCommand, DatabaseEngine};
 pub use login::Credentials;
 pub use lookup::belongs_to_project;
 pub use services::ServiceCommand;
+pub use status::{Condition, DatabaseStatus, DeploymentStatus, ServiceStatus, Status};
 pub use types::*;
 
 use crate::config::ActiveProfile;
@@ -258,7 +260,7 @@ mod tests {
         WebService {
             id: Uuid::parse_str("8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b").unwrap(),
             name: name.to_string(),
-            status: Some("running".to_string()),
+            status: Some(ServiceStatus::Running),
             url: None,
             updated_at: None,
             project_id: project_id.map(|id| Uuid::parse_str(id).unwrap()),

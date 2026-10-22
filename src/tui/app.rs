@@ -7,7 +7,7 @@ use super::login::LoginState;
 use super::poll_plan::desired_polls;
 use super::poller::{Poller, Ticket};
 use super::status::Tone;
-use crate::api::CurrentUser;
+use crate::api::{CurrentUser, DatabaseStatus, ServiceStatus};
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::BTreeMap;
@@ -653,7 +653,7 @@ impl App {
             return;
         };
         let (database_id, name, status, version) = match resource {
-            Resource::Service(service) if service.status == "pending_deletion" => {
+            Resource::Service(service) if service.status == ServiceStatus::PendingDeletion => {
                 // Every service endpoint answers 404 for these.
                 self.show_toast("Being deleted", Tone::Bad);
                 return;
@@ -676,7 +676,7 @@ impl App {
                 database.redis_version.clone(),
             ),
         };
-        if status == "pending_deletion" {
+        if status == DatabaseStatus::PendingDeletion {
             self.show_toast("Being deleted", Tone::Bad);
             return;
         }

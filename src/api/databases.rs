@@ -1,5 +1,5 @@
 use super::{
-    ApiClient, Connection, ConnectionCreate, DatabaseCreate, DatabaseDetail, DatabaseStatus,
+    ApiClient, Connection, ConnectionCreate, DatabaseCreate, DatabaseDetail, DatabaseRuntimeStatus,
     ManagedDatabase, ManagedDatabaseList, ServicePlan, ServicePlanList,
 };
 use anyhow::{anyhow, Result};
@@ -56,7 +56,7 @@ impl ApiClient {
         &self,
         database_id: Uuid,
         command: DatabaseCommand,
-    ) -> Result<DatabaseStatus> {
+    ) -> Result<DatabaseRuntimeStatus> {
         self.post_empty(&format!(
             "/api/v1/databases/{}/{}",
             database_id,
@@ -137,6 +137,7 @@ impl ApiClient {
 mod tests {
     use super::super::test_support::*;
     use super::*;
+    use crate::api::DatabaseStatus;
     use wiremock::matchers::{body_partial_json, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -196,7 +197,7 @@ mod tests {
             .database_command(uuid(DATABASE_ID), DatabaseCommand::Stop)
             .await
             .unwrap();
-        assert_eq!(status.status, "stopping");
+        assert_eq!(status.status, DatabaseStatus::Stopping);
     }
 
     #[tokio::test]

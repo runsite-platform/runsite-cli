@@ -22,6 +22,13 @@ One build-and-release attempt of a service.
 A saved set of credentials and API URL, plus the selected project.
 _Avoid_: account, config
 
+**Status**:
+What the API reports a **Service**, **Database** or **Deployment** is doing, spelled as the API spells it (`running`, `pending_deletion`, ...). A status the CLI does not know yet is kept as is, never an error.
+
+**Condition**:
+What a **Status** means, the same for every resource: running, stopped, sleeping, busy, failed, blocked, deleting or unknown. The TUI's glyphs, the CLI's colours and which actions are allowed are all decided from the **Condition**, never from the raw **Status**.
+_Avoid_: state, phase, look
+
 ### CLI input and output
 
 **Reference**:

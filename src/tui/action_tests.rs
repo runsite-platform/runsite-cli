@@ -121,7 +121,7 @@ fn y_sends_nothing_when_the_status_changed_under_the_modal() {
     assert_eq!(confirm_prompt(&app), "Stop api?");
 
     let mut stopped = landing_detail();
-    stopped.web_services_list[0].status = "stopped".to_string();
+    stopped.web_services_list[0].status = "stopped".into();
     app.poller.refresh_all(app.now);
     update(&mut app, Action::Tick { now: at(4) });
     deliver(

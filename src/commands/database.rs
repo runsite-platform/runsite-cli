@@ -1,6 +1,6 @@
 use crate::api::{
     belongs_to_project, ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine,
-    DatabaseStatus, ManagedDatabase, ServicePlan,
+    DatabaseRuntimeStatus, ManagedDatabase, ServicePlan,
 };
 use crate::cli::{DbEngine, PlanServiceType};
 use crate::output::format::{colorize_status, or_placeholder, PLACEHOLDER};
@@ -157,7 +157,7 @@ impl Report for DatabaseConnected {
 #[derive(Debug, Serialize)]
 #[serde(transparent)]
 pub struct DatabaseStateChanged {
-    pub status: DatabaseStatus,
+    pub status: DatabaseRuntimeStatus,
     #[serde(skip)]
     pub database_name: String,
     #[serde(skip)]

@@ -156,7 +156,7 @@ fn a_reply_sent_before_reopening_a_service_is_dropped() {
     let Screen::ServiceDetail(detail) = &app.screen else {
         panic!("expected the service detail");
     };
-    assert_eq!(detail.service.as_ref().unwrap().status, "running");
+    assert_eq!(detail.service.as_ref().unwrap().status, "running".into());
 }
 
 #[test]

@@ -1,9 +1,9 @@
 use super::{format_age, scroll_offset, truncate};
-use crate::api::DeploymentInfo;
+use crate::api::{DeploymentInfo, DeploymentStatus, Status};
 use crate::tui::app::App;
 use crate::tui::detail::{short_ref, DeploymentView, DetailTab, ServiceDetailState};
 use crate::tui::log_buffer::LogLine;
-use crate::tui::status::{deployment_look, service_look, Tone};
+use crate::tui::status::{look, Tone};
 use crate::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -48,7 +48,7 @@ pub fn render(
     detail: &ServiceDetailState,
     theme: &Theme,
 ) {
-    let look = detail.status().map(service_look);
+    let look = detail.status().map(look);
     let mut title = format!(" {}", detail.name);
     if let (Some(look), Some(status)) = (look, detail.status()) {
         title.push_str(&format!(
@@ -110,7 +110,7 @@ fn render_overview(
         return;
     };
     let empty = theme.empty_value().to_string();
-    let look = service_look(&service.status);
+    let look = look(&service.status);
     let mut lines = vec![Line::from(vec![
         label("Status", theme),
         Span::styled(
@@ -157,7 +157,7 @@ fn render_overview(
     let in_progress = detail
         .latest_deployment
         .as_ref()
-        .filter(|deployment| deployment_look(&deployment.status).transitional);
+        .filter(|deployment| deployment.status.is_transitional());
     if let Some(deployment) = in_progress {
         lines.push(Line::from(vec![
             label("Deploying", theme),
@@ -449,7 +449,7 @@ fn render_deploys(
         .take(height)
         .map(|(index, deployment)| {
             let selected = index == detail.deploy_cursor;
-            let look = deployment_look(&deployment.status);
+            let look = look(&deployment.status);
             let source = match (&deployment.branch, &deployment.image_ref) {
                 (_, Some(image)) if deployment.commit_sha.is_none() => image.clone(),
                 (Some(branch), _) => branch.clone(),
@@ -457,7 +457,7 @@ fn render_deploys(
             };
             let marker = if deployment.is_live {
                 "live"
-            } else if deployment.status == "running" {
+            } else if deployment.status == DeploymentStatus::Running {
                 "ready"
             } else {
                 ""
@@ -513,7 +513,7 @@ fn render_deployment(
         );
         return;
     };
-    let look = deployment_look(&deployment.status);
+    let look = look(&deployment.status);
     let mut header = vec![Line::from(vec![
         Span::styled(
             format!("Deployment {}", short_ref(deployment)),

@@ -6,7 +6,7 @@ use super::app::Screen;
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
 use super::poller::Cadence;
-use super::status::{database_look, deployment_in_progress};
+use crate::api::Status;
 
 pub fn desired_polls(screen: &Screen, dashboard: &DashboardState) -> Vec<(Request, Cadence)> {
     let mut polls = vec![
@@ -47,7 +47,7 @@ fn database_poll(database: &DatabaseDetailState) -> (Request, Cadence) {
     let transitional = database
         .detail
         .as_ref()
-        .is_some_and(|detail| database_look(&detail.status).transitional);
+        .is_some_and(|detail| detail.status.is_transitional());
     let interval = if transitional { 1 } else { 5 };
     (
         Request::Database(database.database_id),
@@ -84,7 +84,7 @@ fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
     }
     if let Some(view) = &detail.deployment_view {
         let cadence = match &view.detail {
-            Some(deployment) if !deployment_in_progress(&deployment.status) => Cadence::Once,
+            Some(deployment) if !deployment.status.is_transitional() => Cadence::Once,
             _ => Cadence::seconds(3),
         };
         polls.push((Request::Deployment(id, view.id), cadence));

@@ -1,8 +1,9 @@
 //! Which remote actions are allowed right now, and why not when they are not.
 
 use super::action::Mutation;
-use super::status::{deployment_in_progress, service_look};
-use crate::api::{DeploymentInfo, ServiceInfo};
+use crate::api::{
+    Condition, DatabaseStatus, DeploymentInfo, DeploymentStatus, ServiceInfo, ServiceStatus, Status,
+};
 use uuid::Uuid;
 
 pub const READ_ONLY_REASON: &str = "needs a write key";
@@ -91,13 +92,13 @@ pub enum DeploymentActivity {
 }
 
 /// Why nothing can be done with a service in this status, if that is the case.
-fn frozen_reason(status: &str) -> Option<String> {
-    match status {
-        "blocked" => Some("blocked by policy".to_string()),
-        "pending_deletion" => Some("being deleted".to_string()),
-        _ if service_look(status).transitional => Some(format!("the service is {status}")),
-        "running" | "stopped" | "sleeping" | "failed" => None,
-        other => Some(format!("unknown status `{other}`")),
+fn frozen_reason(status: &ServiceStatus) -> Option<String> {
+    match status.condition() {
+        Condition::Blocked => Some("blocked by policy".to_string()),
+        Condition::Deleting => Some("being deleted".to_string()),
+        Condition::Busy => Some(format!("the service is {status}")),
+        Condition::Running | Condition::Stopped | Condition::Sleeping | Condition::Failed => None,
+        Condition::Unknown => Some(format!("unknown status `{status}`")),
     }
 }
 
@@ -144,7 +145,7 @@ fn allowed_service_mutation(
         return Err(Unavailable::new(action, reason));
     }
     let deployment_running = deployments == DeploymentActivity::Running;
-    let running = service.status == "running";
+    let running = service.status == ServiceStatus::Running;
     let service_id = service.id;
     match key {
         ActionKey::Deploy | ActionKey::Restart if deployment_running => {
@@ -173,7 +174,7 @@ pub fn rollback_mutation(
     let action = ActionKey::Rollback.label();
     check_scope(action, key_scope)?;
     // Transitional statuses do not block a rollback; unknown ones do.
-    if !service_look(&service.status).transitional {
+    if !service.status.is_transitional() {
         if let Some(reason) = frozen_reason(&service.status) {
             return Err(Unavailable::new(action, reason));
         }
@@ -181,14 +182,14 @@ pub fn rollback_mutation(
     let any_in_progress = deployments
         .iter()
         .chain(latest)
-        .any(|deployment| deployment_in_progress(&deployment.status));
+        .any(|deployment| deployment.status.is_transitional());
     if any_in_progress {
         return Err(Unavailable::new(action, IN_PROGRESS_REASON));
     }
     if target.is_live {
         return Err(Unavailable::new(action, "this deployment is already live"));
     }
-    if target.status != "running" {
+    if target.status != DeploymentStatus::Running {
         return Err(Unavailable::new(
             action,
             format!(
@@ -206,25 +207,24 @@ pub fn rollback_mutation(
 /// `S` on a database.
 pub fn database_mutation(
     database_id: Uuid,
-    status: &str,
+    status: &DatabaseStatus,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
     let action = ActionKey::StartStop.label();
     check_scope(action, key_scope)?;
-    match status {
-        "running" => Ok(Mutation::StopDatabase { database_id }),
-        "stopped" | "failed" => Ok(Mutation::StartDatabase { database_id }),
-        "creating" | "starting" | "stopping" => Err(Unavailable::new(
+    match status.condition() {
+        Condition::Running => Ok(Mutation::StopDatabase { database_id }),
+        Condition::Stopped | Condition::Sleeping | Condition::Failed => {
+            Ok(Mutation::StartDatabase { database_id })
+        }
+        Condition::Busy | Condition::Blocked => Err(Unavailable::new(
             action,
             format!("the database is {status}"),
         )),
-        "suspended" => Err(Unavailable::new(action, "the database is suspended")),
-        "marked_for_deletion" | "pending_deletion" => {
-            Err(Unavailable::new(action, "being deleted"))
-        }
-        other => Err(Unavailable::new(
+        Condition::Deleting => Err(Unavailable::new(action, "being deleted")),
+        Condition::Unknown => Err(Unavailable::new(
             action,
-            format!("unknown status `{other}`"),
+            format!("unknown status `{status}`"),
         )),
     }
 }
@@ -372,7 +372,7 @@ mod tests {
         );
         let ready = deployment(DEPLOYMENT_OLD, "running", false, "7b3e0f2a");
         assert!(rollback_mutation(&running, &ready, &[], None, Some("read")).is_err());
-        assert!(database_mutation(POSTGRES, "running", Some("read")).is_err());
+        assert!(database_mutation(POSTGRES, &DatabaseStatus::Running, Some("read")).is_err());
     }
 
     #[test]
@@ -381,7 +381,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert_eq!(refused.reason, SCOPE_UNKNOWN_REASON);
-        assert!(database_mutation(POSTGRES, "running", None).is_err());
+        assert!(database_mutation(POSTGRES, &DatabaseStatus::Running, None).is_err());
     }
 
     #[test]
@@ -430,14 +430,14 @@ mod tests {
     #[test]
     fn databases_toggle_between_running_and_stopped() {
         assert_eq!(
-            database_mutation(POSTGRES, "running", WRITE),
+            database_mutation(POSTGRES, &DatabaseStatus::Running, WRITE),
             Ok(Mutation::StopDatabase {
                 database_id: POSTGRES
             })
         );
         for status in ["stopped", "failed"] {
             assert_eq!(
-                database_mutation(POSTGRES, status, WRITE),
+                database_mutation(POSTGRES, &DatabaseStatus::from(status), WRITE),
                 Ok(Mutation::StartDatabase {
                     database_id: POSTGRES
                 })
@@ -452,7 +452,7 @@ mod tests {
             "odd",
         ] {
             assert!(
-                database_mutation(POSTGRES, status, WRITE).is_err(),
+                database_mutation(POSTGRES, &DatabaseStatus::from(status), WRITE).is_err(),
                 "{status}"
             );
         }

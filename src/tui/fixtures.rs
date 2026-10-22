@@ -154,7 +154,7 @@ pub fn service(id: Uuid, name: &str, status: &str, project_id: Option<Uuid>) -> 
     ServiceInfo {
         id,
         name: name.to_string(),
-        status: status.to_string(),
+        status: status.into(),
         url: Some(format!("https://{name}-x.runsite.app")),
         project_id,
         project_type: Some("web_service".to_string()),
@@ -180,13 +180,13 @@ pub fn landing_detail() -> ProjectDetail {
         databases_list: vec![PostgresInProject {
             id: POSTGRES,
             name: "pg-main".to_string(),
-            status: "running".to_string(),
+            status: "running".into(),
             postgres_version: Some("16".to_string()),
         }],
         redis_list: vec![RedisInProject {
             id: REDIS,
             name: "cache".to_string(),
-            status: "stopped".to_string(),
+            status: "stopped".into(),
             redis_version: Some("7.2".to_string()),
         }],
     }
@@ -231,7 +231,7 @@ pub const DEPLOYMENT_NEW: Uuid = Uuid::from_u128(0x4b1c2d3e_0000_4000_8000_00000
 pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> DeploymentInfo {
     DeploymentInfo {
         id,
-        status: status.to_string(),
+        status: status.into(),
         branch: Some("main".to_string()),
         commit_sha: Some(sha.to_string()),
         commit_message: Some(format!("change {sha}")),
@@ -277,7 +277,7 @@ pub fn postgres_detail() -> DatabaseDetail {
         id: POSTGRES,
         kind: "postgresql".to_string(),
         name: "pg-main".to_string(),
-        status: "running".to_string(),
+        status: "running".into(),
         plan_name: Some("Starter".to_string()),
         internal_hostname: Some("pg-main.internal".to_string()),
         external_hostname: None,

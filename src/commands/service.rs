@@ -28,7 +28,10 @@ impl From<&WebService> for ServiceRow {
     fn from(service: &WebService) -> Self {
         Self {
             name: service.name.clone(),
-            status: colorize_status(service.status.as_deref().unwrap_or("unknown")),
+            status: service
+                .status
+                .as_ref()
+                .map_or_else(|| "unknown".to_string(), colorize_status),
             url: or_placeholder(service.url.as_deref()),
             updated: format_time(&service.updated_at),
         }
@@ -100,7 +103,7 @@ impl Report for ServiceStatus {
 pub struct ServiceActionAccepted {
     pub service_id: Uuid,
     pub action: &'static str,
-    pub status: String,
+    pub status: crate::api::ServiceStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }

@@ -88,7 +88,7 @@ fn enter_on_postgres_opens_it_with_the_version_from_the_project() {
 fn a_database_being_deleted_cannot_be_opened() {
     let mut app = loaded_dashboard();
     let mut detail = landing_detail();
-    detail.databases_list[0].status = "pending_deletion".to_string();
+    detail.databases_list[0].status = "pending_deletion".into();
     app.dashboard.details.insert(LANDING, detail);
     update(&mut app, key(KeyCode::Tab));
     for _ in 0..3 {
@@ -315,7 +315,7 @@ fn a_log_reply_from_before_reopening_is_dropped() {
 fn a_service_being_deleted_cannot_be_opened() {
     let mut app = loaded_dashboard();
     let mut project = landing_detail();
-    project.web_services_list[0].status = "pending_deletion".to_string();
+    project.web_services_list[0].status = "pending_deletion".into();
     app.dashboard.details.insert(LANDING, project);
     update(&mut app, key(KeyCode::Tab));
     update(&mut app, key(KeyCode::Enter));

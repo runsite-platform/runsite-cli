@@ -142,7 +142,7 @@ mod tests {
     fn deployment(commit_sha: Option<&str>, commit_message: Option<&str>) -> Deployment {
         Deployment {
             id: Uuid::parse_str("3f2a1b4c-0000-4000-8000-000000000001").unwrap(),
-            status: "running".to_string(),
+            status: crate::api::DeploymentStatus::Running,
             branch: Some("main".to_string()),
             commit_sha: commit_sha.map(str::to_string),
             commit_message: commit_message.map(str::to_string),

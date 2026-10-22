@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::status::{DatabaseStatus, DeploymentStatus, ServiceStatus};
+
 // Auth
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -59,7 +61,7 @@ pub struct ManagedDatabase {
     pub id: Uuid,
     pub kind: String,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub plan_name: Option<String>,
     pub storage_limit_gb: Option<i64>,
     #[serde(default)]
@@ -71,11 +73,12 @@ pub struct ManagedDatabaseList {
     pub databases: Vec<ManagedDatabase>,
 }
 
+/// What `POST /databases/{id}/start|stop` answers.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DatabaseStatus {
+pub struct DatabaseRuntimeStatus {
     pub id: Uuid,
     pub kind: String,
-    pub status: String,
+    pub status: DatabaseStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,7 +108,7 @@ pub struct Connection {
 pub struct WebService {
     pub id: Uuid,
     pub name: String,
-    pub status: Option<String>,
+    pub status: Option<ServiceStatus>,
     pub url: Option<String>,
     pub updated_at: Option<DateTime<Utc>>,
     pub project_id: Option<Uuid>,
@@ -121,7 +124,7 @@ pub struct WebServiceList<T = WebService> {
 pub struct WebServiceDetail {
     pub id: Uuid,
     pub name: String,
-    pub status: String,
+    pub status: ServiceStatus,
     pub url: Option<String>,
     pub subdomain: Option<String>,
     pub project_type: Option<String>,
@@ -186,7 +189,7 @@ pub struct WebServiceCreate {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Deployment {
     pub id: Uuid,
-    pub status: String,
+    pub status: DeploymentStatus,
     pub branch: Option<String>,
     pub commit_sha: Option<String>,
     pub commit_message: Option<String>,
@@ -247,7 +250,7 @@ pub struct EnvVarBulkResult {
 /// What `POST …/start|stop|restart` answers: the service's runtime status.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ServiceRuntimeStatus {
-    pub status: String,
+    pub status: ServiceStatus,
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -297,7 +300,7 @@ pub struct ProjectSummary {
 pub struct ServiceInfo {
     pub id: Uuid,
     pub name: String,
-    pub status: String,
+    pub status: ServiceStatus,
     pub url: Option<String>,
     pub project_id: Option<Uuid>,
     pub project_type: Option<String>,
@@ -312,7 +315,7 @@ pub struct ServiceInfo {
 pub struct PostgresInProject {
     pub id: Uuid,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub postgres_version: Option<String>,
 }
 
@@ -320,7 +323,7 @@ pub struct PostgresInProject {
 pub struct RedisInProject {
     pub id: Uuid,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub redis_version: Option<String>,
 }
 
@@ -361,7 +364,7 @@ pub struct MetricsHistory {
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DeploymentInfo {
     pub id: Uuid,
-    pub status: String,
+    pub status: DeploymentStatus,
     pub branch: Option<String>,
     pub commit_sha: Option<String>,
     pub commit_message: Option<String>,
@@ -379,7 +382,7 @@ pub struct DatabaseDetail {
     pub id: Uuid,
     pub kind: String,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub plan_name: Option<String>,
     pub internal_hostname: Option<String>,
     pub external_hostname: Option<String>,
@@ -556,7 +559,7 @@ mod tests {
         }"#;
 
         let parsed: WebServiceDetail = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.status, "running");
+        assert_eq!(parsed.status, ServiceStatus::Running);
         assert_eq!(parsed.max_instances, Some(3));
     }
 }

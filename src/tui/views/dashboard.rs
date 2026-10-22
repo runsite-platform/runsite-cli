@@ -1,7 +1,7 @@
 use super::{scroll_offset, truncate, SPLIT_WIDTH};
 use crate::tui::app::App;
 use crate::tui::dashboard::{Pane, ProjectChoice, Resource};
-use crate::tui::status::{database_look, service_look, StatusLook, Tone};
+use crate::tui::status::{look, StatusLook, Tone};
 use crate::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -147,7 +147,7 @@ fn resource_line(
 
     let spans = match resource {
         Resource::Service(service) => {
-            let look = service_look(&service.status);
+            let look = look(&service.status);
             let instances = match (service.min_instances, service.max_instances) {
                 (Some(min), Some(max)) if min != max => {
                     format!("{min}{}{max}", theme.range_dash())
@@ -166,12 +166,12 @@ fn resource_line(
             ]
         }
         Resource::Postgres(database) => {
-            let look = database_look(&database.status);
+            let look = look(&database.status);
             let version = database.postgres_version.clone().unwrap_or_default();
             database_spans(theme, name, format!("postgres {version}"), look, app)
         }
         Resource::Redis(database) => {
-            let look = database_look(&database.status);
+            let look = look(&database.status);
             let version = database.redis_version.clone().unwrap_or_default();
             database_spans(theme, name, format!("valkey {version}"), look, app)
         }

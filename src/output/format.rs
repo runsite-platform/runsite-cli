@@ -1,18 +1,17 @@
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 
-pub fn colorize_status(status: &str) -> String {
-    match status.to_lowercase().as_str() {
-        "running" => status.green().to_string(),
-        "stopped" => status.red().to_string(),
-        "sleeping" => status.cyan().to_string(),
-        // In progress, as the TUI treats them.
-        "deploying" | "building" | "starting" | "stopping" | "restarting" | "pending"
-        | "cloning" | "rolling_back" | "creating" => status.yellow().to_string(),
-        "failed" | "error" | "crashed" => status.red().bold().to_string(),
-        "succeeded" | "success" | "completed" => status.green().to_string(),
-        "cancelled" | "canceled" => status.dimmed().to_string(),
-        _ => status.normal().to_string(),
+use crate::api::{Condition, Status};
+
+pub fn colorize_status(status: &impl Status) -> String {
+    let text = status.to_string();
+    match status.condition() {
+        Condition::Running => text.green().to_string(),
+        Condition::Stopped | Condition::Sleeping | Condition::Deleting => text.dimmed().to_string(),
+        Condition::Busy => text.yellow().to_string(),
+        Condition::Failed => text.red().bold().to_string(),
+        Condition::Blocked => text.red().to_string(),
+        Condition::Unknown => text,
     }
 }
 

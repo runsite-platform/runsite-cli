@@ -272,7 +272,7 @@ mod tests {
             id: uuid(&format!("3f2a1b4c-0000-4000-8000-0000000000{id_suffix:02}")),
             kind: "postgresql".to_string(),
             name: name.to_string(),
-            status: "running".to_string(),
+            status: crate::api::DatabaseStatus::Running,
             plan_name: None,
             storage_limit_gb: None,
             project_id: project.map(uuid),

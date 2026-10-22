@@ -1,7 +1,9 @@
 use super::actions::DeploymentActivity;
 use super::log_buffer::LogBuffer;
-use super::status::{deployment_in_progress, service_look};
-use crate::api::{DatabaseDetail, DeploymentInfo, MetricsPoint, ResourceMetrics, ServiceInfo};
+use crate::api::{
+    DatabaseDetail, DeploymentInfo, MetricsPoint, ResourceMetrics, ServiceInfo, ServiceStatus,
+    Status,
+};
 use uuid::Uuid;
 
 /// Commit prefix, or the deployment id prefix for image deployments.
@@ -97,12 +99,12 @@ impl ServiceDetailState {
         }
     }
 
-    pub fn status(&self) -> Option<&str> {
-        self.service.as_ref().map(|service| service.status.as_str())
+    pub fn status(&self) -> Option<&ServiceStatus> {
+        self.service.as_ref().map(|service| &service.status)
     }
 
     pub fn is_running(&self) -> bool {
-        self.status() == Some("running")
+        self.status() == Some(&ServiceStatus::Running)
     }
 
     /// A deploy or rollback is running even while the service stays `running`.
@@ -119,18 +121,16 @@ impl ServiceDetailState {
     pub fn deployment_in_progress(&self) -> bool {
         self.latest_deployment
             .as_ref()
-            .is_some_and(|deployment| deployment_in_progress(&deployment.status))
+            .is_some_and(|deployment| deployment.status.is_transitional())
             || self
                 .deployments
                 .iter()
                 .flatten()
-                .any(|deployment| deployment_in_progress(&deployment.status))
+                .any(|deployment| deployment.status.is_transitional())
     }
 
     pub fn transitional(&self) -> bool {
-        self.status()
-            .is_some_and(|status| service_look(status).transitional)
-            || self.deployment_in_progress()
+        self.status().is_some_and(Status::is_transitional) || self.deployment_in_progress()
     }
 
     pub fn live_deployment(&self) -> Option<&DeploymentInfo> {

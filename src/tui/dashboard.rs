@@ -1,7 +1,7 @@
 use super::actions::DeploymentActivity;
-use super::status::deployment_in_progress;
 use crate::api::{
     DeploymentInfo, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
+    Status,
 };
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -73,9 +73,7 @@ impl DashboardState {
     pub fn deployment_activity(&self, service_id: Uuid) -> DeploymentActivity {
         match self.latest_deployments.get(&service_id) {
             None => DeploymentActivity::Unchecked,
-            Some(Some(latest)) if deployment_in_progress(&latest.status) => {
-                DeploymentActivity::Running
-            }
+            Some(Some(latest)) if latest.status.is_transitional() => DeploymentActivity::Running,
             Some(_) => DeploymentActivity::Idle,
         }
     }

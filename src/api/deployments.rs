@@ -120,7 +120,10 @@ mod tests {
             .deployments(uuid(SERVICE_ID), 10)
             .await
             .unwrap();
-        assert_eq!(list.deployments[0].status, "building");
+        assert_eq!(
+            list.deployments[0].status,
+            crate::api::DeploymentStatus::Building
+        );
         assert_eq!(
             list.deployments[0].build_logs.as_deref(),
             Some("Step 1/4\nStep 2/4")
