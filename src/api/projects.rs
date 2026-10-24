@@ -123,11 +123,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.web_services_list[0].max_instances, Some(3));
-        assert_eq!(
-            detail.databases_list[0].postgres_version.as_deref(),
-            Some("16")
-        );
-        assert_eq!(detail.redis_list[0].redis_version.as_deref(), Some("7.2"));
+        assert_eq!(detail.databases_list[0].version.as_deref(), Some("16"));
+        assert_eq!(detail.redis_list[0].version.as_deref(), Some("7.2"));
     }
 
     #[tokio::test]

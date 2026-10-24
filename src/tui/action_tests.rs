@@ -483,3 +483,27 @@ fn a_result_from_the_previous_session_does_not_unblock_the_current_action() {
 
     assert!(app.actions.is_busy());
 }
+
+#[test]
+fn the_dashboard_forgets_deployment_state_while_a_detail_screen_is_open() {
+    let mut app = dashboard_on_resources();
+    assert_eq!(
+        app.dashboard.deployment_activity(API_SERVICE),
+        crate::tui::actions::DeploymentActivity::Idle
+    );
+
+    update(&mut app, key(KeyCode::Enter));
+    assert!(matches!(app.screen, Screen::ServiceDetail(_)));
+    next_poll(
+        &mut app,
+        Request::LatestDeployment(API_SERVICE),
+        Payload::LatestDeployment(None),
+    );
+    update(&mut app, key(KeyCode::Esc));
+
+    assert_eq!(
+        app.dashboard.deployment_activity(API_SERVICE),
+        crate::tui::actions::DeploymentActivity::Unchecked,
+        "the dashboard must wait for its own fresh answer"
+    );
+}

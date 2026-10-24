@@ -90,6 +90,35 @@ pub struct ManagedDatabase {
     pub project_id: Option<Uuid>,
 }
 
+/// The database a command acts on: enough to name it and to pick its routes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseTarget {
+    pub id: Uuid,
+    /// `postgresql` or `valkey`.
+    pub kind: String,
+    pub name: String,
+}
+
+impl From<ManagedDatabase> for DatabaseTarget {
+    fn from(database: ManagedDatabase) -> Self {
+        Self {
+            id: database.id,
+            kind: database.kind,
+            name: database.name,
+        }
+    }
+}
+
+impl From<DatabaseDetail> for DatabaseTarget {
+    fn from(database: DatabaseDetail) -> Self {
+        Self {
+            id: database.id,
+            kind: database.kind,
+            name: database.name,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ManagedDatabaseList {
     pub databases: Vec<ManagedDatabase>,
@@ -318,19 +347,14 @@ pub struct BulkEnvVars {
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct PostgresInProject {
+/// A database in a project's detail, Postgres or Redis/Valkey alike.
+pub struct DatabaseInProject {
     pub id: Uuid,
     pub name: String,
     pub status: DatabaseStatus,
-    pub postgres_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct RedisInProject {
-    pub id: Uuid,
-    pub name: String,
-    pub status: DatabaseStatus,
-    pub redis_version: Option<String>,
+    /// The API names this field after the engine.
+    #[serde(alias = "postgres_version", alias = "redis_version")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -340,9 +364,9 @@ pub struct ProjectDetail {
     #[serde(default)]
     pub web_services_list: Vec<Service>,
     #[serde(default)]
-    pub databases_list: Vec<PostgresInProject>,
+    pub databases_list: Vec<DatabaseInProject>,
     #[serde(default)]
-    pub redis_list: Vec<RedisInProject>,
+    pub redis_list: Vec<DatabaseInProject>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]

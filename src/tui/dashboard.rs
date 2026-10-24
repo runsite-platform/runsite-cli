@@ -1,9 +1,9 @@
 use super::action::{Payload, Request};
+use super::action_gate::{plain_confirm, service_confirm, Confirm};
 use super::actions::DeploymentActivity;
+use super::actions::{database_mutation, service_mutation, ActionKey, Unavailable};
 use super::poller::Cadence;
-use crate::api::{
-    Deployment, PostgresInProject, Project, ProjectDetail, RedisInProject, Service, Status,
-};
+use crate::api::{DatabaseInProject, Deployment, Project, ProjectDetail, Service, Status};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -32,16 +32,24 @@ pub struct ProjectRow<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Resource<'a> {
     Service(&'a Service),
-    Postgres(&'a PostgresInProject),
-    Redis(&'a RedisInProject),
+    Postgres(&'a DatabaseInProject),
+    Redis(&'a DatabaseInProject),
 }
 
 impl<'a> Resource<'a> {
     pub fn name(&self) -> &'a str {
         match self {
             Resource::Service(service) => &service.name,
-            Resource::Postgres(database) => &database.name,
-            Resource::Redis(database) => &database.name,
+            Resource::Postgres(database) | Resource::Redis(database) => &database.name,
+        }
+    }
+
+    /// The database behind a database row, and the engine name shown for it.
+    pub fn database(&self) -> Option<(&'a DatabaseInProject, &'static str)> {
+        match self {
+            Resource::Service(_) => None,
+            Resource::Postgres(database) => Some((database, "postgres")),
+            Resource::Redis(database) => Some((database, "valkey")),
         }
     }
 }
@@ -168,7 +176,7 @@ impl DashboardState {
     /// Web services, then Postgres, then Redis/Valkey.
     fn resource_iter(&self) -> impl Iterator<Item = Resource<'_>> {
         let filter = self.resource_filter.to_lowercase();
-        let (services, databases, redis): (&[Service], &[PostgresInProject], &[RedisInProject]) =
+        let (services, databases, redis): (&[Service], &[DatabaseInProject], &[DatabaseInProject]) =
             match self.selected_project {
                 Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
                     Some(detail) => (
@@ -241,6 +249,50 @@ impl DashboardState {
             }
         }
         polls
+    }
+
+    /// Forget the deployment state of services the dashboard no longer polls,
+    /// all of them while it is hidden: it goes stale, and the next visit must
+    /// wait for a fresh answer instead of trusting it.
+    pub fn forget_unpolled(&mut self, shown: bool) {
+        if !shown {
+            self.latest_deployments.clear();
+            return;
+        }
+        let polled: Vec<Request> = self
+            .polls()
+            .into_iter()
+            .map(|(request, _)| request)
+            .collect();
+        self.latest_deployments
+            .retain(|service_id, _| polled.contains(&Request::LatestDeployment(*service_id)));
+    }
+
+    /// What `key` would do to the selected resource. `None` when the key
+    /// means nothing here, `Err` when it is disabled.
+    pub fn resolve_action(
+        &self,
+        key: ActionKey,
+        key_scope: Option<&str>,
+    ) -> Option<Result<Confirm, Unavailable>> {
+        // Only the focused pane's selection is a target: in the one-pane
+        // layout the resources list may not even be visible.
+        if self.focus != Pane::Resources {
+            return None;
+        }
+        let resource = self.selected_resource()?;
+        if let Resource::Service(service) = resource {
+            let deployments = self.deployment_activity(service.id);
+            return Some(
+                service_mutation(key, service, deployments, key_scope)?
+                    .map(|mutation| service_confirm(mutation, service)),
+            );
+        }
+        let (database, _) = resource.database()?;
+        (key == ActionKey::StartStop).then(|| {
+            database_mutation(database.id, &database.status, key_scope)
+                .map(|mutation| plain_confirm(mutation, &database.name))
+        })
     }
 
     /// Takes in a reply to one of the dashboard's requests; others are ignored.

@@ -165,15 +165,11 @@ fn resource_line(
                 Span::styled(format!(" {instances}"), theme.muted()),
             ]
         }
-        Resource::Postgres(database) => {
+        Resource::Postgres(database) | Resource::Redis(database) => {
+            let engine = resource.database().map_or("", |(_, engine)| engine);
+            let version = database.version.as_deref().unwrap_or_default();
             let look = look(&database.status);
-            let version = database.postgres_version.clone().unwrap_or_default();
-            database_spans(theme, name, format!("postgres {version}"), look, app)
-        }
-        Resource::Redis(database) => {
-            let look = look(&database.status);
-            let version = database.redis_version.clone().unwrap_or_default();
-            database_spans(theme, name, format!("valkey {version}"), look, app)
+            database_spans(theme, name, format!("{engine} {version}"), look, app)
         }
     };
 

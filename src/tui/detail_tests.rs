@@ -91,17 +91,19 @@ fn enter_on_postgres_opens_it_with_the_version_from_the_project() {
 
 #[test]
 fn a_database_being_deleted_cannot_be_opened() {
-    let mut app = loaded_dashboard();
-    let mut detail = landing_detail();
-    detail.databases_list[0].status = "pending_deletion".into();
-    app.dashboard.details.insert(LANDING, detail);
-    update(&mut app, key(KeyCode::Tab));
-    for _ in 0..3 {
-        update(&mut app, char_key('j'));
+    for deleting_status in ["pending_deletion", "marked_for_deletion"] {
+        let mut app = loaded_dashboard();
+        let mut detail = landing_detail();
+        detail.databases_list[0].status = deleting_status.into();
+        app.dashboard.details.insert(LANDING, detail);
+        update(&mut app, key(KeyCode::Tab));
+        for _ in 0..3 {
+            update(&mut app, char_key('j'));
+        }
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.screen, Screen::Dashboard), "{deleting_status}");
+        assert_eq!(app.toast.as_ref().unwrap().text, "Being deleted");
     }
-    update(&mut app, key(KeyCode::Enter));
-    assert!(matches!(app.screen, Screen::Dashboard));
-    assert_eq!(app.toast.as_ref().unwrap().text, "Being deleted");
 }
 
 #[test]

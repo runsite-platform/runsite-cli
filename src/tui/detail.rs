@@ -1,10 +1,15 @@
 use super::action::{Payload, Request};
-use super::actions::DeploymentActivity;
-use super::log_buffer::LogBuffer;
+use super::action_gate::{plain_confirm, service_confirm, Confirm};
+use super::actions::{
+    database_mutation, rollback_mutation, service_mutation, ActionKey, DeploymentActivity,
+    Unavailable,
+};
+use super::log_buffer::{LogBuffer, LogQuery};
 use super::poller::Cadence;
 use crate::api::{
     DatabaseDetail, Deployment, MetricsPoint, ResourceMetrics, Service, ServiceStatus, Status,
 };
+use crate::error::ApiError;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -188,14 +193,81 @@ impl ServiceDetailState {
         polls
     }
 
-    /// Takes in a reply meant for this screen; any other payload is handed back.
-    pub fn apply(&mut self, payload: Payload, now: DateTime<Utc>) -> Option<Payload> {
+    /// True when `request` reads the service this screen shows.
+    fn concerns(&self, request: Request) -> bool {
+        match request {
+            Request::Service(id)
+            | Request::LatestDeployment(id)
+            | Request::Metrics(id)
+            | Request::MetricsHistory(id)
+            | Request::Logs(id)
+            | Request::Deployments(id)
+            | Request::Deployment(id, _) => id == self.service_id,
+            _ => false,
+        }
+    }
+
+    /// Called as `request` is sent: the log window to ask for, if it reads logs.
+    pub fn start_fetch(&mut self, request: Request) -> Option<LogQuery> {
+        match request {
+            Request::Logs(id) if id == self.service_id => Some(self.logs.start_fetch()),
+            _ => None,
+        }
+    }
+
+    /// True when the screen shows `error` in place, instead of the status line.
+    pub fn fetch_failed(&mut self, request: Request, error: &ApiError) -> bool {
+        matches!(request, Request::Logs(id) if id == self.service_id)
+            && self.logs.fetch_failed(error)
+    }
+
+    /// What `key` would do here. `None` when the key means nothing on this
+    /// screen or tab, `Err` when it is disabled.
+    pub fn resolve_action(
+        &self,
+        key: ActionKey,
+        key_scope: Option<&str>,
+    ) -> Option<Result<Confirm, Unavailable>> {
+        let service = self.service.as_ref()?;
+        if key != ActionKey::Rollback {
+            return Some(
+                service_mutation(key, service, self.deployment_activity(), key_scope)?
+                    .map(|mutation| service_confirm(mutation, service)),
+            );
+        }
+        let target = match &self.deployment_view {
+            Some(view) => view.detail.as_ref()?,
+            None if self.tab == DetailTab::Deploys => self.selected_deployment()?,
+            None => return None,
+        };
+        let mutation = rollback_mutation(
+            service,
+            target,
+            self.deployments.as_deref().unwrap_or_default(),
+            self.latest_deployment.as_ref(),
+            key_scope,
+        );
+        Some(mutation.map(|mutation| Confirm {
+            mutation,
+            target: service.name.clone(),
+            suffix: format!(" to {}?", short_ref(target)),
+        }))
+    }
+
+    /// Takes in a reply to one of this screen's requests; any other is handed back.
+    pub fn apply(
+        &mut self,
+        request: Request,
+        payload: Payload,
+        now: DateTime<Utc>,
+    ) -> Option<Payload> {
+        if !self.concerns(request) {
+            return Some(payload);
+        }
         match payload {
             Payload::Service(service) => {
-                if service.id == self.service_id {
-                    self.name = service.name.clone();
-                    self.service = Some(*service);
-                }
+                self.name = service.name.clone();
+                self.service = Some(*service);
             }
             Payload::LatestDeployment(deployment) => {
                 self.latest_deployment = deployment.map(|deployment| *deployment);
@@ -222,18 +294,18 @@ impl ServiceDetailState {
     }
 
     pub fn vanished(&mut self, request: Request) -> Vanished {
+        if !self.concerns(request) {
+            return Vanished::Unrelated;
+        }
         match request {
-            Request::Deployment(..) if self.deployment_view.is_some() => {
-                self.deployment_view = None;
-                Vanished::Part
+            Request::Deployment(..) => {
+                if self.deployment_view.take().is_some() {
+                    Vanished::Part
+                } else {
+                    Vanished::Unrelated
+                }
             }
-            Request::Service(_)
-            | Request::LatestDeployment(_)
-            | Request::Metrics(_)
-            | Request::MetricsHistory(_)
-            | Request::Logs(_)
-            | Request::Deployments(_) => Vanished::Whole,
-            _ => Vanished::Unrelated,
+            _ => Vanished::Whole,
         }
     }
 }
@@ -259,10 +331,26 @@ impl DatabaseDetailState {
         )
     }
 
-    /// Takes in a reply meant for this screen; any other payload is handed back.
-    pub fn apply(&mut self, payload: Payload) -> Option<Payload> {
+    /// `S` starts or stops the database once its status is known.
+    pub fn resolve_action(
+        &self,
+        key: ActionKey,
+        key_scope: Option<&str>,
+    ) -> Option<Result<Confirm, Unavailable>> {
+        if key != ActionKey::StartStop {
+            return None;
+        }
+        let detail = self.detail.as_ref()?;
+        Some(
+            database_mutation(self.database_id, &detail.status, key_scope)
+                .map(|mutation| plain_confirm(mutation, &self.name)),
+        )
+    }
+
+    /// Takes in a reply to this screen's request; any other is handed back.
+    pub fn apply(&mut self, request: Request, payload: Payload) -> Option<Payload> {
         match payload {
-            Payload::Database(detail) => {
+            Payload::Database(detail) if request == Request::Database(self.database_id) => {
                 self.detail = Some(*detail);
                 None
             }
@@ -271,9 +359,10 @@ impl DatabaseDetailState {
     }
 
     pub fn vanished(&self, request: Request) -> Vanished {
-        match request {
-            Request::Database(_) => Vanished::Whole,
-            _ => Vanished::Unrelated,
+        if request == Request::Database(self.database_id) {
+            Vanished::Whole
+        } else {
+            Vanished::Unrelated
         }
     }
 }
@@ -291,12 +380,36 @@ mod tests {
     #[test]
     fn a_reply_for_another_screen_is_handed_back() {
         let mut detail = detail();
-        let handed_back = detail.apply(Payload::Projects(Vec::new()), Utc::now());
+        let handed_back =
+            detail.apply(Request::Projects, Payload::Projects(Vec::new()), Utc::now());
         assert!(matches!(handed_back, Some(Payload::Projects(_))));
         assert!(detail
-            .apply(Payload::Deployments(Vec::new()), Utc::now())
+            .apply(
+                Request::Deployments(API_SERVICE),
+                Payload::Deployments(Vec::new()),
+                Utc::now()
+            )
             .is_none());
         assert!(detail.deployments_checked);
+    }
+
+    #[test]
+    fn a_reply_about_another_service_is_handed_back() {
+        let mut detail = detail();
+        let other_service = Uuid::from_u128(0xfeed);
+
+        let handed_back = detail.apply(
+            Request::Deployments(other_service),
+            Payload::Deployments(Vec::new()),
+            Utc::now(),
+        );
+
+        assert!(handed_back.is_some());
+        assert!(!detail.deployments_checked);
+        assert_eq!(
+            detail.vanished(Request::Service(other_service)),
+            Vanished::Unrelated
+        );
     }
 
     #[test]

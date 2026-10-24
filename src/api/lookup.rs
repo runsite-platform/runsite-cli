@@ -93,7 +93,7 @@ impl ProjectScope {
 }
 
 /// True when `resource` sits in `selected_project`, or when none is selected.
-pub fn belongs_to_project<T: Named>(resource: &T, selected_project: Option<Uuid>) -> bool {
+fn belongs_to_project<T: Named>(resource: &T, selected_project: Option<Uuid>) -> bool {
     match selected_project {
         Some(selected) => resource.project_id() == Some(selected),
         None => true,
@@ -305,6 +305,28 @@ mod tests {
 
     fn selected() -> Option<Uuid> {
         Some(uuid(PROJECT))
+    }
+
+    #[test]
+    fn a_selected_project_holds_only_its_own_resources() {
+        assert!(belongs_to_project(
+            &database(1, "main", Some(PROJECT)),
+            selected()
+        ));
+        assert!(!belongs_to_project(
+            &database(1, "main", Some(OTHER_PROJECT)),
+            selected()
+        ));
+        assert!(!belongs_to_project(&database(1, "main", None), selected()));
+    }
+
+    #[test]
+    fn every_resource_belongs_when_no_project_is_selected() {
+        assert!(belongs_to_project(
+            &database(1, "main", Some(PROJECT)),
+            None
+        ));
+        assert!(belongs_to_project(&database(1, "main", None), None));
     }
 
     #[test]

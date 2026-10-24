@@ -3,8 +3,8 @@
 use super::action::{Action, Effect, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
-    ApiKeyIdentity, DatabaseDetail, Deployment, MetricsPoint, PostgresInProject, Project,
-    ProjectDetail, RedisInProject, ResourceMetrics, Service, ServiceSummary, User,
+    ApiKeyIdentity, DatabaseDetail, DatabaseInProject, Deployment, MetricsPoint, Project,
+    ProjectDetail, ResourceMetrics, Service, ServiceSummary, User,
 };
 use crate::error::ApiError;
 use chrono::{DateTime, TimeZone, Utc};
@@ -183,17 +183,17 @@ pub fn landing_detail() -> ProjectDetail {
             service(WEB_SERVICE, "web", "running", Some(LANDING)),
             service(WORKER_SERVICE, "worker", "stopped", Some(LANDING)),
         ],
-        databases_list: vec![PostgresInProject {
+        databases_list: vec![DatabaseInProject {
             id: POSTGRES,
             name: "pg-main".to_string(),
             status: "running".into(),
-            postgres_version: Some("16".to_string()),
+            version: Some("16".to_string()),
         }],
-        redis_list: vec![RedisInProject {
+        redis_list: vec![DatabaseInProject {
             id: REDIS,
             name: "cache".to_string(),
             status: "stopped".into(),
-            redis_version: Some("7.2".to_string()),
+            version: Some("7.2".to_string()),
         }],
     }
 }

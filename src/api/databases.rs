@@ -1,6 +1,7 @@
 use super::{
     ApiClient, Connection, ConnectionCreate, DatabaseCreate, DatabaseDetail, DatabaseRuntimeStatus,
-    ManagedDatabase, ManagedDatabaseList, ProjectScope, ServicePlan, ServicePlanList,
+    DatabaseTarget, ManagedDatabase, ManagedDatabaseList, ProjectScope, ServicePlan,
+    ServicePlanList,
 };
 use anyhow::{anyhow, Result};
 use uuid::Uuid;
@@ -94,7 +95,7 @@ impl ApiClient {
     pub async fn connect_database(
         &self,
         service_id: Uuid,
-        database: &ManagedDatabase,
+        database: &DatabaseTarget,
     ) -> Result<Connection> {
         let target_type = if database.kind == "valkey" {
             "redis"
@@ -146,10 +147,13 @@ impl ApiClient {
             })
     }
 
-    /// A database ID, or a name looked up in the selected project.
-    pub async fn resolve_database(&self, name_or_id: &str) -> Result<ManagedDatabase> {
+    /// A database ID, read on its own, or a name looked up in the selected project.
+    pub async fn resolve_database(&self, name_or_id: &str) -> Result<DatabaseTarget> {
+        if let Ok(id) = Uuid::parse_str(name_or_id) {
+            return Ok(self.database(id).await?.into());
+        }
         let databases = self.databases(ProjectScope::Everything).await?;
-        self.find(databases, Some(name_or_id)).await
+        Ok(self.find(databases, Some(name_or_id)).await?.into())
     }
 }
 
@@ -320,8 +324,11 @@ mod tests {
             .mount(&server)
             .await;
 
-        let cache: ManagedDatabase =
-            serde_json::from_value(database_json(DATABASE_ID, "cache", "valkey")).unwrap();
+        let cache = DatabaseTarget {
+            id: uuid(DATABASE_ID),
+            kind: "valkey".to_string(),
+            name: "cache".to_string(),
+        };
         let connection = client_for(&server)
             .connect_database(uuid(SERVICE_ID), &cache)
             .await
@@ -346,10 +353,32 @@ mod tests {
             client.resolve_database("cache").await.unwrap().kind,
             "valkey"
         );
-        assert_eq!(
-            client.resolve_database(DATABASE_ID).await.unwrap().name,
-            "pg-main"
-        );
+    }
+
+    #[tokio::test]
+    async fn a_database_id_reads_only_that_database() {
+        let server = MockServer::start().await;
+        expect_request(
+            &server,
+            "GET",
+            &format!("/api/v1/databases/{DATABASE_ID}"),
+            200,
+            serde_json::json!({
+                "id": DATABASE_ID, "kind": "postgresql", "name": "pg-main",
+                "status": "running", "plan_name": null, "internal_hostname": null,
+                "external_hostname": null, "cpu_usage_percent": null,
+                "memory_usage_percent": null
+            }),
+        )
+        .await;
+
+        let target = client_for(&server)
+            .resolve_database(DATABASE_ID)
+            .await
+            .unwrap();
+
+        assert_eq!(target.name, "pg-main");
+        assert_eq!(target.kind, "postgresql");
     }
 
     #[tokio::test]

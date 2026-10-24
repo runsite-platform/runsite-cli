@@ -182,27 +182,7 @@ impl ApiClient {
 
 #[cfg(test)]
 mod tests {
-    use super::lookup::belongs_to_project;
     use super::*;
-
-    fn service(name: &str, project_id: Option<&str>) -> Service {
-        Service {
-            id: Uuid::parse_str("8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b").unwrap(),
-            name: name.to_string(),
-            status: ServiceStatus::Running,
-            url: None,
-            subdomain: None,
-            project_id: project_id.map(|id| Uuid::parse_str(id).unwrap()),
-            project_type: None,
-            source_type: None,
-            image_ref: None,
-            github_branch: None,
-            github_repo_full_name: None,
-            min_instances: None,
-            max_instances: None,
-            updated_at: None,
-        }
-    }
 
     #[test]
     fn a_trailing_slash_in_the_api_url_is_dropped() {
@@ -212,39 +192,5 @@ mod tests {
         };
         let client = ApiClient::new(ActiveProfile::in_memory("default", profile, None));
         assert_eq!(client.base_url, "https://api.runsite.app");
-    }
-
-    const PROJECT: &str = "ca83c4a9-1517-4fe3-93aa-bbdab4eaee23";
-    const OTHER_PROJECT: &str = "8d5b5e8e-2348-4a29-8c05-bcfa1e599ef2";
-
-    fn selected() -> Option<Uuid> {
-        Some(Uuid::parse_str(PROJECT).unwrap())
-    }
-
-    #[test]
-    fn a_service_in_the_selected_project_belongs_to_it() {
-        assert!(belongs_to_project(
-            &service("api", Some(PROJECT)),
-            selected()
-        ));
-    }
-
-    #[test]
-    fn a_service_from_another_project_is_filtered_out() {
-        assert!(!belongs_to_project(
-            &service("api", Some(OTHER_PROJECT)),
-            selected()
-        ));
-    }
-
-    #[test]
-    fn every_service_is_listed_when_no_project_is_selected() {
-        assert!(belongs_to_project(&service("api", Some(PROJECT)), None));
-        assert!(belongs_to_project(&service("api", None), None));
-    }
-
-    #[test]
-    fn a_service_without_a_project_is_filtered_out_under_a_selection() {
-        assert!(!belongs_to_project(&service("api", None), selected()));
     }
 }

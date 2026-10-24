@@ -158,6 +158,7 @@ impl Poller {
         }
     }
 
+    #[cfg(test)]
     pub fn is_active(&self, request: &Request) -> bool {
         self.schedules.contains_key(request)
     }

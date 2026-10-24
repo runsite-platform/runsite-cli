@@ -1,45 +1,38 @@
 //! What the service detail commands from `keymap` do.
 
-use super::app::{App, Screen};
 use super::detail::{DeploymentView, DetailTab, ServiceDetailState};
 use super::keymap::DetailCommand;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use chrono::{DateTime, Utc};
 
-impl App {
-    /// Rows of log or build output a PgUp/PgDn moves.
-    fn page_size(&self) -> usize {
-        (self.height as usize).saturating_sub(10).max(1)
-    }
-
-    pub(super) fn run_detail_command(&mut self, command: DetailCommand, key: KeyEvent) {
-        let page = self.page_size();
-        let now = self.now;
-        let Screen::ServiceDetail(detail) = &mut self.screen else {
-            return;
-        };
-        let character = match key.code {
-            KeyCode::Char(character) => Some(character),
-            _ => None,
-        };
+impl ServiceDetailState {
+    /// `character` is the key pressed, when it is a character; `page` is how
+    /// many rows PgUp/PgDn move.
+    pub fn run_command(
+        &mut self,
+        command: DetailCommand,
+        character: Option<char>,
+        page: usize,
+        now: DateTime<Utc>,
+    ) {
         let next_tab = match command {
             DetailCommand::TabByDigit => character.and_then(DetailTab::from_digit),
-            DetailCommand::NextTab => Some(detail.tab.next()),
-            DetailCommand::PreviousTab => Some(detail.tab.previous()),
+            DetailCommand::NextTab => Some(self.tab.next()),
+            DetailCommand::PreviousTab => Some(self.tab.previous()),
             _ => None,
         };
         if let Some(tab) = next_tab {
-            if tab == DetailTab::Logs && detail.tab != DetailTab::Logs {
-                detail.logs.resume(now);
+            if tab == DetailTab::Logs && self.tab != DetailTab::Logs {
+                self.logs.resume(now);
             }
-            detail.tab = tab;
+            self.tab = tab;
             return;
         }
-        if detail.deployment_view.is_some() {
-            scroll_deployment(detail, command, page);
+        if self.deployment_view.is_some() {
+            scroll_deployment(self, command, page);
             return;
         }
 
-        let logs = &mut detail.logs;
+        let logs = &mut self.logs;
         match command {
             DetailCommand::LineUp => logs.scroll_up(1),
             DetailCommand::LineDown => logs.scroll_down(1),
@@ -68,15 +61,15 @@ impl App {
                 }
             }
             DetailCommand::DeployCursorUp => {
-                detail.deploy_cursor = detail.deploy_cursor.saturating_sub(1)
+                self.deploy_cursor = self.deploy_cursor.saturating_sub(1)
             }
             DetailCommand::DeployCursorDown => {
-                let count = detail.deployments.as_ref().map_or(0, Vec::len);
-                detail.deploy_cursor = (detail.deploy_cursor + 1).min(count.saturating_sub(1));
+                let count = self.deployments.as_ref().map_or(0, Vec::len);
+                self.deploy_cursor = (self.deploy_cursor + 1).min(count.saturating_sub(1));
             }
             DetailCommand::OpenDeployment => {
-                if let Some(deployment) = detail.selected_deployment() {
-                    detail.deployment_view = Some(DeploymentView {
+                if let Some(deployment) = self.selected_deployment() {
+                    self.deployment_view = Some(DeploymentView {
                         id: deployment.id,
                         detail: Some(deployment.clone()),
                         scroll: 0,

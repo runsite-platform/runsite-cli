@@ -3,11 +3,12 @@ use super::action_gate::{ActionSlot, Confirm};
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
 use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState, Vanished};
 use super::keymap::{self, Command};
+use super::log_buffer::LogQuery;
 use super::login::LoginState;
 use super::poll_plan::desired_polls;
 use super::poller::{Poller, Ticket};
 use super::status::Tone;
-use crate::api::{DatabaseStatus, ServiceStatus, User};
+use crate::api::{Condition, Status, User};
 use crate::error::ApiError;
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -35,6 +36,39 @@ pub enum Screen {
     DatabaseDetail(DatabaseDetailState),
     Login(LoginState),
     Blocked { reason: String },
+}
+
+/// The open screen's say in fetching: only detail screens own requests.
+impl Screen {
+    fn start_fetch(&mut self, request: Request) -> Option<LogQuery> {
+        match self {
+            Screen::ServiceDetail(detail) => detail.start_fetch(request),
+            _ => None,
+        }
+    }
+
+    fn fetch_failed(&mut self, request: Request, error: &ApiError) -> bool {
+        match self {
+            Screen::ServiceDetail(detail) => detail.fetch_failed(request, error),
+            _ => false,
+        }
+    }
+
+    fn apply(&mut self, request: Request, payload: Payload, now: DateTime<Utc>) -> Option<Payload> {
+        match self {
+            Screen::ServiceDetail(detail) => detail.apply(request, payload, now),
+            Screen::DatabaseDetail(database) => database.apply(request, payload),
+            _ => Some(payload),
+        }
+    }
+
+    fn vanished(&mut self, request: Request) -> Vanished {
+        match self {
+            Screen::ServiceDetail(detail) => detail.vanished(request),
+            Screen::DatabaseDetail(database) => database.vanished(request),
+            _ => Vanished::Unrelated,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -155,14 +189,10 @@ impl App {
     }
 
     fn fetch_effect(&mut self, request: Request, ticket: Ticket) -> Effect {
-        let log_query = match (request, &mut self.screen) {
-            (Request::Logs(_), Screen::ServiceDetail(detail)) => Some(detail.logs.start_fetch()),
-            _ => None,
-        };
         Effect::Fetch {
             ticket,
             request,
-            log_query,
+            log_query: self.screen.start_fetch(request),
         }
     }
 
@@ -172,13 +202,8 @@ impl App {
         }
         let desired = desired_polls(&self.screen, &self.dashboard);
         self.poller.sync(&desired, self.now);
-        // A deployment state that is no longer polled goes stale: forget it, so the
-        // next visit waits for a fresh answer instead of trusting an old one.
         let on_dashboard = matches!(self.screen, Screen::Dashboard);
-        let poller = &self.poller;
-        self.dashboard.latest_deployments.retain(|service_id, _| {
-            on_dashboard && poller.is_active(&Request::LatestDeployment(*service_id))
-        });
+        self.dashboard.forget_unpolled(on_dashboard);
         for (request, ticket) in self.poller.take_due(self.now) {
             effects.push(self.fetch_effect(request, ticket));
         }
@@ -260,13 +285,7 @@ impl App {
     /// The open screen takes its own replies; the rest belong to the session
     /// or to the dashboard, which outlives the screens opened from it.
     fn apply_payload(&mut self, request: Request, payload: Payload) {
-        let now = self.now;
-        let unclaimed = match &mut self.screen {
-            Screen::ServiceDetail(detail) => detail.apply(payload, now),
-            Screen::DatabaseDetail(database) => database.apply(payload),
-            _ => Some(payload),
-        };
-        match unclaimed {
+        match self.screen.apply(request, payload, self.now) {
             Some(Payload::CurrentUser(user)) => self.session.user = Some(user),
             Some(Payload::KeyScope(identity)) => self.session.key_scope = Some(identity.scope),
             Some(payload) => self.dashboard.apply(request, payload),
@@ -323,10 +342,8 @@ impl App {
         }
         self.poller
             .record_failure(request, self.now, error.backs_off());
-        if let (Request::Logs(_), Screen::ServiceDetail(detail)) = (request, &mut self.screen) {
-            if detail.logs.fetch_failed(&error) {
-                return Vec::new();
-            }
+        if self.screen.fetch_failed(request, &error) {
+            return Vec::new();
         }
         match error {
             ApiError::RateLimited => self.show_toast(ApiError::RateLimited.to_string(), Tone::Bad),
@@ -343,12 +360,7 @@ impl App {
     }
 
     fn handle_not_found(&mut self, request: Request) {
-        let vanished = match &mut self.screen {
-            Screen::ServiceDetail(detail) => detail.vanished(request),
-            Screen::DatabaseDetail(database) => database.vanished(request),
-            _ => Vanished::Unrelated,
-        };
-        match vanished {
+        match self.screen.vanished(request) {
             Vanished::Whole => {
                 // A modal about the vanished resource must not survive it.
                 self.overlay = None;
@@ -417,7 +429,7 @@ impl App {
     }
 
     fn run_command(&mut self, command: Command, key: KeyEvent) -> Vec<Effect> {
-        let pressed_digit = match key.code {
+        let pressed_character = match key.code {
             KeyCode::Char(character) => Some(character),
             _ => None,
         };
@@ -444,11 +456,11 @@ impl App {
             | Command::LoginEscape
             | Command::LoginErase
             | Command::LoginSubmit
-            | Command::LoginType => return self.run_login_command(command, pressed_digit),
+            | Command::LoginType => return self.run_login_command(command, pressed_character),
             Command::FilterEscape
             | Command::FilterApply
             | Command::FilterErase
-            | Command::FilterType => self.run_filter_command(command, pressed_digit),
+            | Command::FilterType => self.run_filter_command(command, pressed_character),
             Command::SwitchPane => {
                 self.dashboard.focus = match self.dashboard.focus {
                     Pane::Projects => Pane::Resources,
@@ -462,7 +474,7 @@ impl App {
             Command::OpenResource => self.open_selected_resource(DetailTab::Overview),
             Command::OpenResourceOnTab => {
                 if let (Some(tab), Some(Resource::Service(_))) = (
-                    pressed_digit.and_then(DetailTab::from_digit),
+                    pressed_character.and_then(DetailTab::from_digit),
                     self.dashboard.selected_resource(),
                 ) {
                     self.open_selected_resource(tab);
@@ -470,9 +482,20 @@ impl App {
             }
             Command::OpenFilter => self.dashboard.editing_filter = Some(self.dashboard.focus),
             Command::BackToDashboard => self.screen = Screen::Dashboard,
-            Command::Detail(detail_command) => self.run_detail_command(detail_command, key),
+            Command::Detail(detail_command) => {
+                let page = self.page_size();
+                let now = self.now;
+                if let Screen::ServiceDetail(detail) = &mut self.screen {
+                    detail.run_command(detail_command, pressed_character, page, now);
+                }
+            }
         }
         Vec::new()
+    }
+
+    /// Rows of log or build output a PgUp/PgDn moves.
+    fn page_size(&self) -> usize {
+        (self.height as usize).saturating_sub(10).max(1)
     }
 
     fn open_profiles(&mut self) -> Vec<Effect> {
@@ -610,40 +633,28 @@ impl App {
         let Some(resource) = self.dashboard.selected_resource() else {
             return;
         };
-        let (database_id, name, status, version) = match resource {
-            Resource::Service(service) if service.status == ServiceStatus::PendingDeletion => {
-                // Every service endpoint answers 404 for these.
-                self.show_toast("Being deleted", Tone::Bad);
-                return;
-            }
-            Resource::Service(service) => {
-                self.screen =
-                    Screen::ServiceDetail(Box::new(ServiceDetailState::new(service.clone(), tab)));
-                return;
-            }
-            Resource::Postgres(database) => (
-                database.id,
-                database.name.clone(),
-                database.status.clone(),
-                database.postgres_version.clone(),
-            ),
-            Resource::Redis(database) => (
-                database.id,
-                database.name.clone(),
-                database.status.clone(),
-                database.redis_version.clone(),
-            ),
+        let condition = match resource {
+            Resource::Service(service) => service.status.condition(),
+            Resource::Postgres(database) | Resource::Redis(database) => database.status.condition(),
         };
-        if status == DatabaseStatus::PendingDeletion {
+        // Every endpoint of a resource being deleted answers 404.
+        if condition == Condition::Deleting {
             self.show_toast("Being deleted", Tone::Bad);
             return;
         }
-        self.screen = Screen::DatabaseDetail(DatabaseDetailState {
-            database_id,
-            name,
-            version,
-            detail: None,
-        });
+        self.screen = match resource {
+            Resource::Service(service) => {
+                Screen::ServiceDetail(Box::new(ServiceDetailState::new(service.clone(), tab)))
+            }
+            Resource::Postgres(database) | Resource::Redis(database) => {
+                Screen::DatabaseDetail(DatabaseDetailState {
+                    database_id: database.id,
+                    name: database.name.clone(),
+                    version: database.version.clone(),
+                    detail: None,
+                })
+            }
+        };
     }
 
     fn move_cursor(&mut self, pane: Pane, delta: isize) {

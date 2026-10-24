@@ -3,12 +3,8 @@
 //! that only one action runs at a time. Only `y` in the modal sends a request.
 
 use super::action::{Effect, Mutation};
-use super::actions::{
-    database_mutation, rollback_mutation, service_mutation, ActionKey, Unavailable,
-};
+use super::actions::{ActionKey, Unavailable};
 use super::app::{App, Overlay, Screen};
-use super::dashboard::{Pane, Resource};
-use super::detail::{short_ref, DetailTab};
 use super::status::Tone;
 use crate::api::Service;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -89,7 +85,7 @@ pub struct ActionHint {
     pub enabled: bool,
 }
 
-fn service_confirm(mutation: Mutation, service: &Service) -> Confirm {
+pub(super) fn service_confirm(mutation: Mutation, service: &Service) -> Confirm {
     let suffix = match mutation {
         Mutation::Deploy { .. } => match (&service.image_ref, &service.github_branch) {
             (Some(image), _) if service.source_type.as_deref() == Some("image") => {
@@ -107,7 +103,7 @@ fn service_confirm(mutation: Mutation, service: &Service) -> Confirm {
     }
 }
 
-fn plain_confirm(mutation: Mutation, target: &str) -> Confirm {
+pub(super) fn plain_confirm(mutation: Mutation, target: &str) -> Confirm {
     Confirm {
         mutation,
         target: target.to_string(),
@@ -150,61 +146,10 @@ impl App {
     fn resolve_action_on_screen(&self, key: ActionKey) -> Option<Result<Confirm, Unavailable>> {
         let scope = self.session.key_scope.as_deref();
         match &self.screen {
-            // Only the focused pane's selection is a target: in the one-pane
-            // layout the resources list may not even be visible.
-            Screen::Dashboard if self.dashboard.focus != Pane::Resources => None,
-            Screen::Dashboard => match self.dashboard.selected_resource()? {
-                Resource::Service(service) => {
-                    let deployments = self.dashboard.deployment_activity(service.id);
-                    Some(
-                        service_mutation(key, service, deployments, scope)?
-                            .map(|mutation| service_confirm(mutation, service)),
-                    )
-                }
-                Resource::Postgres(database) if key == ActionKey::StartStop => Some(
-                    database_mutation(database.id, &database.status, scope)
-                        .map(|mutation| plain_confirm(mutation, &database.name)),
-                ),
-                Resource::Redis(database) if key == ActionKey::StartStop => Some(
-                    database_mutation(database.id, &database.status, scope)
-                        .map(|mutation| plain_confirm(mutation, &database.name)),
-                ),
-                _ => None,
-            },
-            Screen::ServiceDetail(detail) => {
-                let service = detail.service.as_ref()?;
-                if key != ActionKey::Rollback {
-                    return Some(
-                        service_mutation(key, service, detail.deployment_activity(), scope)?
-                            .map(|mutation| service_confirm(mutation, service)),
-                    );
-                }
-                let target = match &detail.deployment_view {
-                    Some(view) => view.detail.as_ref()?,
-                    None if detail.tab == DetailTab::Deploys => detail.selected_deployment()?,
-                    None => return None,
-                };
-                let mutation = rollback_mutation(
-                    service,
-                    target,
-                    detail.deployments.as_deref().unwrap_or_default(),
-                    detail.latest_deployment.as_ref(),
-                    scope,
-                );
-                Some(mutation.map(|mutation| Confirm {
-                    mutation,
-                    target: service.name.clone(),
-                    suffix: format!(" to {}?", short_ref(target)),
-                }))
-            }
-            Screen::DatabaseDetail(database) if key == ActionKey::StartStop => {
-                let detail = database.detail.as_ref()?;
-                Some(
-                    database_mutation(database.database_id, &detail.status, scope)
-                        .map(|mutation| plain_confirm(mutation, &database.name)),
-                )
-            }
-            _ => None,
+            Screen::Dashboard => self.dashboard.resolve_action(key, scope),
+            Screen::ServiceDetail(detail) => detail.resolve_action(key, scope),
+            Screen::DatabaseDetail(database) => database.resolve_action(key, scope),
+            Screen::Login(_) | Screen::Blocked { .. } => None,
         }
     }
 
