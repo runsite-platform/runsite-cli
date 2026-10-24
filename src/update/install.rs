@@ -509,6 +509,7 @@ mod tests {
         assert!(error.to_string().contains("installed with cargo"));
     }
 
+    #[cfg(unix)]
     fn release_of_script(version: &str) -> (Vec<u8>, String) {
         let script = format!("#!/bin/sh\necho \"runsite {version}\"\n");
         let archive_bytes = tar_gz_with("runsite", script.as_bytes());
