@@ -163,6 +163,16 @@ pub enum ServiceCommands {
         /// Service name or ID
         service: Option<String>,
     },
+
+    /// Delete a service with its disk and env vars (needs an admin API key)
+    Delete {
+        /// Service name or ID
+        service: String,
+
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy)]

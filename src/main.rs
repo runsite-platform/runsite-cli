@@ -130,6 +130,10 @@ async fn run(cli: Cli) -> Result<()> {
                 )
                 .await?,
             )?,
+            ServiceCommands::Delete { service, yes } => emit(
+                format,
+                &commands::service::delete(&client, &service, yes).await?,
+            )?,
         },
 
         Commands::Deploy { service, watch } => emit(

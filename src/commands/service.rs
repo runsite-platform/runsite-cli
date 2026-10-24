@@ -7,6 +7,7 @@ use crate::cli::ServiceCreateArgs;
 use crate::output::format::{colorize_status, format_time, or_placeholder};
 use crate::output::{write_table, Report};
 use anyhow::{bail, Result};
+use dialoguer::Confirm;
 use serde::Serialize;
 use std::io::{self, Write};
 use tabled::Tabled;
@@ -116,6 +117,19 @@ impl Report for ServiceActionAccepted {
     }
 }
 
+#[derive(Debug, Serialize)]
+pub struct ServiceDeleted {
+    pub service_id: Uuid,
+    pub action: &'static str,
+    pub name: String,
+}
+
+impl Report for ServiceDeleted {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "Deleted service {}.", self.name)
+    }
+}
+
 pub async fn list(client: &ApiClient, all: bool) -> Result<Services> {
     let project_id = if all {
         None
@@ -196,6 +210,33 @@ pub async fn run_command(
     })
 }
 
+pub async fn delete(
+    client: &ApiClient,
+    service: &str,
+    skip_confirmation: bool,
+) -> Result<ServiceDeleted> {
+    let id = client.resolve_service_id(Some(service)).await?;
+    let target = client.service(id).await?;
+    if !skip_confirmation {
+        let confirmed = Confirm::new()
+            .with_prompt(format!(
+                "Delete service {} with its disk and env vars? This cannot be undone",
+                target.name
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            bail!("aborted");
+        }
+    }
+    client.delete_service(id).await?;
+    Ok(ServiceDeleted {
+        service_id: id,
+        action: "delete",
+        name: target.name,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +258,39 @@ mod tests {
             }),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn delete_reports_the_deleted_service() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            &format!("/api/v1/web-services/{SERVICE_ID}"),
+            serde_json::json!({"id": SERVICE_ID, "name": "api", "status": "running", "url": null}),
+        )
+        .await;
+        expect_request(
+            &server,
+            "DELETE",
+            &format!("/api/v1/web-services/{SERVICE_ID}"),
+            204,
+            serde_json::json!({}),
+        )
+        .await;
+
+        let report = delete(&client_for(&server), SERVICE_ID, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            render_json(&report),
+            serde_json::json!({"service_id": SERVICE_ID, "action": "delete", "name": "api"})
+        );
+        assert_eq!(
+            render_text(&report),
+            "Deleted service api.
+"
+        );
     }
 
     #[tokio::test]

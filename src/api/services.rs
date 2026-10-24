@@ -90,6 +90,12 @@ impl ApiClient {
         .await
     }
 
+    /// Deletes the service with its instances, route, disk and env vars.
+    pub async fn delete_service(&self, service_id: Uuid) -> Result<()> {
+        self.delete_req(&format!("/api/v1/web-services/{}", service_id))
+            .await
+    }
+
     /// A service ID, or a name looked up in the selected project. With no
     /// argument, the project's only service.
     pub async fn resolve_service_id(&self, name_or_id: Option<&str>) -> Result<Uuid> {
