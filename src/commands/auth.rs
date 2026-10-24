@@ -1,23 +1,58 @@
-use crate::api::{ApiClient, Credentials, UserResponse};
-use crate::cli::OutputFormat;
-use crate::config::{self, Config};
-use crate::output::render;
+use crate::api::{ApiClient, Credentials, User};
+use crate::config::ActiveProfile;
+use crate::output::Report;
 use anyhow::Result;
 use dialoguer::{Input, Password};
-use std::sync::{Arc, Mutex};
+use serde::Serialize;
+use std::io::{self, Write};
+
+#[derive(Debug, Serialize)]
+pub struct LoggedIn {
+    pub profile: String,
+    pub email: String,
+}
+
+impl Report for LoggedIn {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "Logged in as {}", self.email)
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoggedOut {
+    pub profile: String,
+    pub action: &'static str,
+}
+
+impl Report for LoggedOut {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "Logged out. (The key is still active server-side; revoke it in the dashboard.)"
+        )
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct CurrentUser(pub User);
+
+impl Report for CurrentUser {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let user = &self.0;
+        writeln!(out, "Email: {}", user.email)?;
+        if let Some(name) = &user.full_name {
+            writeln!(out, "Name:  {}", name)?;
+        }
+        writeln!(out, "ID:    {}", user.id)
+    }
+}
 
 pub async fn login(
-    config: Arc<Mutex<Config>>,
-    profile_name: &str,
-    base_url: &str,
+    client: &ApiClient,
+    profile: &ActiveProfile,
     token: Option<&str>,
-) -> Result<()> {
-    let client = ApiClient::new(
-        base_url.to_string(),
-        config.clone(),
-        profile_name.to_string(),
-    );
-
+) -> Result<LoggedIn> {
     let credentials = match token {
         // An API key created in the dashboard: the only path that works for
         // accounts without a password (social login).
@@ -30,36 +65,21 @@ pub async fn login(
     };
 
     let outcome = client.log_in(&credentials).await?;
-    println!("Logged in as {}", outcome.email);
-    store_key(&config, profile_name, outcome.api_key)
-}
-
-fn store_key(config: &Arc<Mutex<Config>>, profile_name: &str, api_key: String) -> Result<()> {
-    let mut cfg = config.lock().unwrap();
-    let profile = cfg.profiles.entry(profile_name.to_string()).or_default();
-    profile.api_key = Some(api_key);
-    config::save_profile(&cfg, profile_name)
-}
-
-pub fn logout(config: Arc<Mutex<Config>>, profile_name: &str) -> Result<()> {
-    {
-        let mut cfg = config.lock().unwrap();
-        if let Some(profile) = cfg.profiles.get_mut(profile_name) {
-            profile.api_key = None;
-        }
-        config::save_profile(&cfg, profile_name)?;
-    }
-    println!("Logged out. (The key is still active server-side; revoke it in the dashboard.)");
-    Ok(())
-}
-
-pub async fn whoami(client: &ApiClient, format: OutputFormat) -> Result<()> {
-    let user: UserResponse = client.get("/api/v1/users/me").await?;
-    render(format, &user, || {
-        println!("Email: {}", user.email);
-        if let Some(name) = &user.full_name {
-            println!("Name:  {}", name);
-        }
-        println!("ID:    {}", user.id);
+    profile.store_api_key(outcome.api_key)?;
+    Ok(LoggedIn {
+        profile: profile.name(),
+        email: outcome.email,
     })
+}
+
+pub fn logout(profile: &ActiveProfile) -> Result<LoggedOut> {
+    profile.forget_api_key()?;
+    Ok(LoggedOut {
+        profile: profile.name(),
+        action: "logout",
+    })
+}
+
+pub async fn whoami(client: &ApiClient) -> Result<CurrentUser> {
+    Ok(CurrentUser(client.current_user().await?))
 }

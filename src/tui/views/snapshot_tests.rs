@@ -1,5 +1,6 @@
 use super::tests::render_text;
-use crate::tui::action::{Action, FetchError, Payload, ProfileEntry, Request};
+use crate::error::ApiError;
+use crate::tui::action::{Action, Payload, ProfileEntry, Request};
 use crate::tui::app::{update, App};
 use crate::tui::fixtures::*;
 use crate::tui::theme::Theme;
@@ -89,7 +90,7 @@ fn dashboard_offline() {
     fail(
         &mut app,
         Request::Projects,
-        FetchError::Offline {
+        ApiError::Offline {
             message: "down".to_string(),
         },
     );
@@ -162,10 +163,10 @@ fn login_form() {
 #[test]
 fn login_after_a_revoked_key() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Unauthorized {
+        ApiError::Unauthorized {
             message: "bad".to_string(),
         },
     );
@@ -220,10 +221,10 @@ fn profile_picker() {
 #[test]
 fn blocked_account() {
     let mut app = loaded_dashboard();
-    fail(
+    fail_next_poll(
         &mut app,
         Request::Projects,
-        FetchError::Blocked {
+        ApiError::Blocked {
             reason: "unpaid invoice".to_string(),
         },
     );
@@ -247,11 +248,14 @@ fn loaded_service_detail(tab_key: char) -> App {
         Request::LatestDeployment(API_SERVICE),
         Payload::LatestDeployment(deployments().into_iter().next().map(Box::new)),
     );
-    deliver(
-        &mut app,
-        Request::Deployments(API_SERVICE),
-        Payload::Deployments(deployments()),
-    );
+    // The Logs tab does not poll the deployment list.
+    if tab_key != '2' {
+        deliver(
+            &mut app,
+            Request::Deployments(API_SERVICE),
+            Payload::Deployments(deployments()),
+        );
+    }
     app
 }
 
@@ -284,7 +288,7 @@ fn service_overview() {
 #[test]
 fn a_stopped_service_shows_no_metrics() {
     let mut app = loaded_service_detail('1');
-    deliver(
+    next_poll(
         &mut app,
         Request::Service(API_SERVICE),
         Payload::Service(Box::new(service(
@@ -421,7 +425,10 @@ fn a_log_message_stays_visible_above_existing_lines() {
         },
     );
     if let crate::tui::app::Screen::ServiceDetail(detail) = &mut app.screen {
-        detail.logs.status_message = Some("Service is not ready yet".to_string());
+        detail.logs.fetch_failed(&ApiError::Rejected {
+            status: 400,
+            message: "Service is not ready yet".to_string(),
+        });
     }
     let screen = render_text(&app, &unicode(), 120, 40);
     assert!(screen.contains("Service is not ready yet"));

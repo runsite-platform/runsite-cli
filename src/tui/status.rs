@@ -1,5 +1,7 @@
-//! Maps API status strings to how they look. Unknown strings never panic:
-//! they get a neutral `?` glyph.
+//! How a status looks on screen. What a status means lives in `api::Status`;
+//! this only maps its condition to a glyph and a tone.
+
+use crate::api::{Condition, Status};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
@@ -24,118 +26,56 @@ pub enum Glyph {
 pub struct StatusLook {
     pub glyph: Glyph,
     pub tone: Tone,
-    pub transitional: bool,
 }
 
-const fn look(glyph: Glyph, tone: Tone) -> StatusLook {
-    StatusLook {
-        glyph,
-        tone,
-        transitional: false,
-    }
-}
-
-const BUSY: StatusLook = StatusLook {
-    glyph: Glyph::Busy,
-    tone: Tone::Neutral,
-    transitional: true,
-};
-
-const UNKNOWN: StatusLook = look(Glyph::Unknown, Tone::Neutral);
-
-pub fn service_look(status: &str) -> StatusLook {
-    match status {
-        "running" => look(Glyph::Running, Tone::Good),
-        "stopped" => look(Glyph::Stopped, Tone::Muted),
-        "sleeping" => look(Glyph::Sleeping, Tone::Muted),
-        "deploying" | "starting" | "stopping" | "restarting" => BUSY,
-        "failed" => look(Glyph::Failed, Tone::Bad),
-        "blocked" | "pending_deletion" => look(Glyph::Blocked, Tone::Bad),
-        _ => UNKNOWN,
-    }
-}
-
-pub fn database_look(status: &str) -> StatusLook {
-    match status {
-        "running" => look(Glyph::Running, Tone::Good),
-        "stopped" => look(Glyph::Stopped, Tone::Muted),
-        "failed" => look(Glyph::Failed, Tone::Bad),
-        "creating" | "starting" | "stopping" => BUSY,
-        "suspended" | "marked_for_deletion" => look(Glyph::Blocked, Tone::Bad),
-        // `/databases/{id}` returns 404 for these, so the row is greyed out.
-        "pending_deletion" => look(Glyph::Blocked, Tone::Muted),
-        _ => UNKNOWN,
-    }
-}
-
-pub fn deployment_look(status: &str) -> StatusLook {
-    match status {
-        "running" => look(Glyph::Running, Tone::Good),
-        "failed" => look(Glyph::Failed, Tone::Bad),
-        "cancelled" => look(Glyph::Stopped, Tone::Muted),
-        "pending" | "cloning" | "building" | "deploying" | "rolling_back" => BUSY,
-        _ => UNKNOWN,
-    }
-}
-
-pub fn deployment_in_progress(status: &str) -> bool {
-    deployment_look(status).transitional
+pub fn look(status: &impl Status) -> StatusLook {
+    let (glyph, tone) = match status.condition() {
+        Condition::Running => (Glyph::Running, Tone::Good),
+        Condition::Stopped => (Glyph::Stopped, Tone::Muted),
+        Condition::Sleeping => (Glyph::Sleeping, Tone::Muted),
+        Condition::Busy => (Glyph::Busy, Tone::Neutral),
+        Condition::Failed => (Glyph::Failed, Tone::Bad),
+        Condition::Blocked => (Glyph::Blocked, Tone::Bad),
+        Condition::Deleting => (Glyph::Blocked, Tone::Muted),
+        Condition::Unknown => (Glyph::Unknown, Tone::Neutral),
+    };
+    StatusLook { glyph, tone }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{DatabaseStatus, DeploymentStatus, ServiceStatus};
 
     #[test]
-    fn every_documented_service_status_has_a_look() {
-        assert_eq!(service_look("running").glyph, Glyph::Running);
-        assert_eq!(service_look("stopped").glyph, Glyph::Stopped);
-        assert_eq!(service_look("sleeping").glyph, Glyph::Sleeping);
-        assert_eq!(service_look("failed").tone, Tone::Bad);
-        assert_eq!(service_look("blocked").glyph, Glyph::Blocked);
-        assert_eq!(service_look("pending_deletion").glyph, Glyph::Blocked);
-        for status in ["deploying", "starting", "stopping", "restarting"] {
-            assert!(service_look(status).transitional, "{status}");
-        }
+    fn statuses_look_by_their_condition() {
+        assert_eq!(look(&ServiceStatus::Running).tone, Tone::Good);
+        assert_eq!(look(&ServiceStatus::Sleeping).glyph, Glyph::Sleeping);
+        assert_eq!(look(&ServiceStatus::Blocked).tone, Tone::Bad);
+        assert_eq!(look(&DatabaseStatus::Suspended).glyph, Glyph::Blocked);
+        assert_eq!(look(&DeploymentStatus::Cancelled).glyph, Glyph::Stopped);
+        assert_eq!(look(&DeploymentStatus::Building).glyph, Glyph::Busy);
     }
 
     #[test]
-    fn every_documented_database_status_has_a_look() {
-        assert_eq!(database_look("running").tone, Tone::Good);
-        assert_eq!(database_look("stopped").glyph, Glyph::Stopped);
-        assert_eq!(database_look("failed").glyph, Glyph::Failed);
-        assert_eq!(database_look("suspended").glyph, Glyph::Blocked);
-        assert_eq!(database_look("marked_for_deletion").glyph, Glyph::Blocked);
-        assert_eq!(database_look("pending_deletion").tone, Tone::Muted);
-        for status in ["creating", "starting", "stopping"] {
-            assert!(database_look(status).transitional, "{status}");
-        }
+    fn deletion_is_greyed_out_not_an_error() {
+        let deleting = StatusLook {
+            glyph: Glyph::Blocked,
+            tone: Tone::Muted,
+        };
+        assert_eq!(look(&ServiceStatus::PendingDeletion), deleting);
+        assert_eq!(look(&DatabaseStatus::PendingDeletion), deleting);
     }
 
     #[test]
-    fn every_documented_deployment_status_has_a_look() {
-        for status in [
-            "pending",
-            "cloning",
-            "building",
-            "deploying",
-            "rolling_back",
-        ] {
-            assert!(deployment_in_progress(status), "{status}");
-        }
-        for status in ["running", "failed", "cancelled"] {
-            assert!(!deployment_in_progress(status), "{status}");
-        }
-        assert_eq!(deployment_look("running").tone, Tone::Good);
-        assert_eq!(deployment_look("failed").glyph, Glyph::Failed);
-        assert_eq!(deployment_look("cancelled").glyph, Glyph::Stopped);
-    }
-
-    #[test]
-    fn an_unknown_status_is_neutral_and_settled() {
-        assert_eq!(service_look("hibernating"), UNKNOWN);
-        assert_eq!(database_look(""), UNKNOWN);
-        assert_eq!(deployment_look("queued"), UNKNOWN);
-        assert!(!service_look("hibernating").transitional);
+    fn an_unknown_status_is_neutral() {
+        let unknown = look(&ServiceStatus::from("hibernating"));
+        assert_eq!(
+            unknown,
+            StatusLook {
+                glyph: Glyph::Unknown,
+                tone: Tone::Neutral
+            }
+        );
     }
 }

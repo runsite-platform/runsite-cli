@@ -1,7 +1,8 @@
-use super::action::{Action, Effect, FetchError, Mutation, Payload, Request};
-use super::app::{update, App, Overlay, Screen, RATE_LIMIT_MESSAGE};
+use super::action::{Action, Effect, Mutation, Payload, Request};
+use super::app::{update, App, Overlay, Screen};
 use super::fixtures::*;
 use super::status::Tone;
+use crate::error::ApiError;
 use ratatui::crossterm::event::KeyCode;
 
 fn mutations(effects: &[Effect]) -> Vec<Mutation> {
@@ -24,7 +25,7 @@ fn dashboard_on_resources() -> App {
 fn confirm_prompt(app: &App) -> String {
     match &app.overlay {
         Some(Overlay::Confirm(confirm)) => {
-            format!("{} {}{}", confirm.verb, confirm.target, confirm.suffix)
+            format!("{} {}{}", confirm.verb(), confirm.target, confirm.suffix)
         }
         other => panic!("expected a confirm modal, got {other:?}"),
     }
@@ -63,7 +64,7 @@ fn settled_service_detail() -> App {
     app
 }
 
-fn mutated(app: &mut App, mutation: Mutation, result: Result<(), FetchError>) -> Vec<Effect> {
+fn mutated(app: &mut App, mutation: Mutation, result: Result<(), ApiError>) -> Vec<Effect> {
     let action = Action::Mutated {
         generation: app.generation,
         mutation,
@@ -121,7 +122,7 @@ fn y_sends_nothing_when_the_status_changed_under_the_modal() {
     assert_eq!(confirm_prompt(&app), "Stop api?");
 
     let mut stopped = landing_detail();
-    stopped.web_services_list[0].status = "stopped".to_string();
+    stopped.web_services_list[0].status = "stopped".into();
     app.poller.refresh_all(app.now);
     update(&mut app, Action::Tick { now: at(4) });
     deliver(
@@ -174,7 +175,7 @@ fn a_rejected_action_does_not_block_the_next_one() {
         Mutation::Restart {
             service_id: API_SERVICE,
         },
-        Err(FetchError::RateLimited),
+        Err(ApiError::RateLimited),
     );
     update(&mut app, char_key('R'));
     assert!(matches!(app.overlay, Some(Overlay::Confirm(_))));
@@ -251,15 +252,8 @@ fn a_disabled_action_explains_itself_without_a_modal() {
 #[test]
 fn a_read_key_disables_actions() {
     let mut app = dashboard_on_resources();
-    deliver(
-        &mut app,
-        Request::KeyScope,
-        Payload::KeyScope(crate::api::ApiKeyIdentity {
-            id: uuid::Uuid::from_u128(9),
-            name: "ci".to_string(),
-            scope: "read".to_string(),
-        }),
-    );
+    // The key scope is fetched once per session; this one came back read-only.
+    app.session.key_scope = Some("read".to_string());
     update(&mut app, char_key('D'));
     assert!(app.overlay.is_none());
     assert_eq!(
@@ -400,10 +394,13 @@ fn a_rate_limited_action_is_not_retried() {
         Mutation::Deploy {
             service_id: API_SERVICE,
         },
-        Err(FetchError::RateLimited),
+        Err(ApiError::RateLimited),
     );
     assert!(mutations(&effects).is_empty());
-    assert_eq!(app.toast.as_ref().unwrap().text, RATE_LIMIT_MESSAGE);
+    assert_eq!(
+        app.toast.as_ref().unwrap().text,
+        ApiError::RateLimited.to_string()
+    );
     assert!(
         !app.poller.backing_off(),
         "polling is not slowed by a mutation"
@@ -418,7 +415,7 @@ fn a_failed_action_shows_the_api_detail_and_refetches() {
         Mutation::StopService {
             service_id: API_SERVICE,
         },
-        Err(FetchError::Forbidden {
+        Err(ApiError::Forbidden {
             message: "This action needs a `write` key (yours: `read`)".to_string(),
         }),
     );
@@ -438,7 +435,7 @@ fn an_action_on_a_deleted_service_returns_to_the_dashboard() {
         Mutation::Restart {
             service_id: API_SERVICE,
         },
-        Err(FetchError::NotFound {
+        Err(ApiError::NotFound {
             message: "Web service not found".to_string(),
         }),
     );
@@ -460,4 +457,53 @@ fn a_result_from_before_a_profile_switch_is_dropped() {
         },
     );
     assert!(app.toast.is_none());
+}
+
+#[test]
+fn a_result_from_the_previous_session_does_not_unblock_the_current_action() {
+    let mut app = dashboard_on_resources();
+    update(&mut app, char_key('R'));
+    update(&mut app, char_key('y'));
+    let old_generation = app.generation;
+    // A profile switch starts a new session, where another action is sent.
+    app.generation += 1;
+    app.actions.clear();
+    app.actions.start(app.generation);
+
+    update(
+        &mut app,
+        Action::Mutated {
+            generation: old_generation,
+            mutation: Mutation::Restart {
+                service_id: API_SERVICE,
+            },
+            result: Err(ApiError::RateLimited),
+        },
+    );
+
+    assert!(app.actions.is_busy());
+}
+
+#[test]
+fn the_dashboard_forgets_deployment_state_while_a_detail_screen_is_open() {
+    let mut app = dashboard_on_resources();
+    assert_eq!(
+        app.dashboard.deployment_activity(API_SERVICE),
+        crate::tui::actions::DeploymentActivity::Idle
+    );
+
+    update(&mut app, key(KeyCode::Enter));
+    assert!(matches!(app.screen, Screen::ServiceDetail(_)));
+    next_poll(
+        &mut app,
+        Request::LatestDeployment(API_SERVICE),
+        Payload::LatestDeployment(None),
+    );
+    update(&mut app, key(KeyCode::Esc));
+
+    assert_eq!(
+        app.dashboard.deployment_activity(API_SERVICE),
+        crate::tui::actions::DeploymentActivity::Unchecked,
+        "the dashboard must wait for its own fresh answer"
+    );
 }

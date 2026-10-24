@@ -1,8 +1,9 @@
 //! Which remote actions are allowed right now, and why not when they are not.
 
 use super::action::Mutation;
-use super::status::{deployment_in_progress, service_look};
-use crate::api::{DeploymentInfo, ServiceInfo};
+use crate::api::{
+    Condition, DatabaseStatus, Deployment, DeploymentStatus, Service, ServiceStatus, Status,
+};
 use uuid::Uuid;
 
 pub const READ_ONLY_REASON: &str = "needs a write key";
@@ -30,31 +31,74 @@ impl Unavailable {
     }
 }
 
+/// An uppercase key that changes remote state. Every place that names, hints
+/// or explains these keys reads it from here; `keymap` binds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ServiceKey {
+pub enum ActionKey {
     Deploy,
     Restart,
     StartStop,
+    Rollback,
 }
 
-impl ServiceKey {
+impl ActionKey {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Deploy => "D",
+            Self::Restart => "R",
+            Self::StartStop => "S",
+            Self::Rollback => "B",
+        }
+    }
+
+    /// Names the action in "… is unavailable" messages.
     pub fn label(self) -> &'static str {
         match self {
-            ServiceKey::Deploy => "Deploy",
-            ServiceKey::Restart => "Restart",
-            ServiceKey::StartStop => "Start/stop",
+            Self::Deploy => "Deploy",
+            Self::Restart => "Restart",
+            Self::StartStop => "Start/stop",
+            Self::Rollback => "Rollback",
+        }
+    }
+
+    /// The status bar hint while the action's direction is unknown.
+    pub const fn hint(self) -> &'static str {
+        match self {
+            Self::Deploy => "deploy",
+            Self::Restart => "restart",
+            Self::StartStop => "start/stop",
+            Self::Rollback => "rollback",
+        }
+    }
+
+    pub const fn help(self) -> &'static str {
+        match self {
+            Self::Deploy => "deploy (rebuild)",
+            Self::Restart => "restart",
+            Self::StartStop => "start / stop",
+            Self::Rollback => "roll back to this deployment",
         }
     }
 }
 
+/// What is known about a service's deployments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeploymentActivity {
+    /// A deployment is pending, building, deploying or rolling back.
+    Running,
+    Idle,
+    /// Not polled yet: one may be running.
+    Unchecked,
+}
+
 /// Why nothing can be done with a service in this status, if that is the case.
-fn frozen_reason(status: &str) -> Option<String> {
-    match status {
-        "blocked" => Some("blocked by policy".to_string()),
-        "pending_deletion" => Some("being deleted".to_string()),
-        _ if service_look(status).transitional => Some(format!("the service is {status}")),
-        "running" | "stopped" | "sleeping" | "failed" => None,
-        other => Some(format!("unknown status `{other}`")),
+fn frozen_reason(status: &ServiceStatus) -> Option<String> {
+    match status.condition() {
+        Condition::Blocked => Some("blocked by policy".to_string()),
+        Condition::Deleting => Some("being deleted".to_string()),
+        Condition::Busy => Some(format!("the service is {status}")),
+        Condition::Running | Condition::Stopped | Condition::Sleeping | Condition::Failed => None,
+        Condition::Unknown => Some(format!("unknown status `{status}`")),
     }
 }
 
@@ -67,12 +111,32 @@ fn check_scope(action: &'static str, key_scope: Option<&str>) -> Result<(), Unav
     }
 }
 
-/// `D`, `R` or `S` on a service. `deployment_running` is true while any
-/// deployment of it is pending, building, deploying or rolling back.
+/// `D`, `R` or `S` on a service; `None` for any other key.
 pub fn service_mutation(
-    key: ServiceKey,
-    service: &ServiceInfo,
-    deployment_running: bool,
+    key: ActionKey,
+    service: &Service,
+    deployments: DeploymentActivity,
+    key_scope: Option<&str>,
+) -> Option<Result<Mutation, Unavailable>> {
+    let action = key.label();
+    let mutation = match key {
+        ActionKey::Deploy | ActionKey::Restart | ActionKey::StartStop => {
+            allowed_service_mutation(key, service, deployments, key_scope)
+        }
+        ActionKey::Rollback => return None,
+    };
+    // Scope and status reasons win; then wait for the first deployments poll.
+    let unchecked = deployments == DeploymentActivity::Unchecked;
+    if mutation.is_ok() && unchecked && key != ActionKey::StartStop {
+        return Some(Err(Unavailable::new(action, CHECKING_DEPLOYMENT_REASON)));
+    }
+    Some(mutation)
+}
+
+fn allowed_service_mutation(
+    key: ActionKey,
+    service: &Service,
+    deployments: DeploymentActivity,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
     let action = key.label();
@@ -80,38 +144,37 @@ pub fn service_mutation(
     if let Some(reason) = frozen_reason(&service.status) {
         return Err(Unavailable::new(action, reason));
     }
-    let running = service.status == "running";
+    let deployment_running = deployments == DeploymentActivity::Running;
+    let running = service.status == ServiceStatus::Running;
     let service_id = service.id;
     match key {
-        ServiceKey::Deploy if deployment_running => {
+        ActionKey::Deploy | ActionKey::Restart if deployment_running => {
             Err(Unavailable::new(action, IN_PROGRESS_REASON))
         }
-        ServiceKey::Deploy => Ok(Mutation::Deploy { service_id }),
-        ServiceKey::Restart if deployment_running => {
-            Err(Unavailable::new(action, IN_PROGRESS_REASON))
-        }
-        ServiceKey::Restart if running => Ok(Mutation::Restart { service_id }),
-        ServiceKey::Restart => Err(Unavailable::new(
+        ActionKey::Deploy => Ok(Mutation::Deploy { service_id }),
+        ActionKey::Restart if running => Ok(Mutation::Restart { service_id }),
+        ActionKey::Restart => Err(Unavailable::new(
             action,
             format!("the service is {}", service.status),
         )),
-        ServiceKey::StartStop if running => Ok(Mutation::StopService { service_id }),
-        ServiceKey::StartStop => Ok(Mutation::StartService { service_id }),
+        ActionKey::StartStop if running => Ok(Mutation::StopService { service_id }),
+        ActionKey::StartStop => Ok(Mutation::StartService { service_id }),
+        ActionKey::Rollback => unreachable!("rollback is not a service action"),
     }
 }
 
 /// `B` on a deployment of `service`.
 pub fn rollback_mutation(
-    service: &ServiceInfo,
-    target: &DeploymentInfo,
-    deployments: &[DeploymentInfo],
-    latest: Option<&DeploymentInfo>,
+    service: &Service,
+    target: &Deployment,
+    deployments: &[Deployment],
+    latest: Option<&Deployment>,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
-    let action = "Rollback";
+    let action = ActionKey::Rollback.label();
     check_scope(action, key_scope)?;
     // Transitional statuses do not block a rollback; unknown ones do.
-    if !service_look(&service.status).transitional {
+    if !service.status.is_transitional() {
         if let Some(reason) = frozen_reason(&service.status) {
             return Err(Unavailable::new(action, reason));
         }
@@ -119,14 +182,14 @@ pub fn rollback_mutation(
     let any_in_progress = deployments
         .iter()
         .chain(latest)
-        .any(|deployment| deployment_in_progress(&deployment.status));
+        .any(|deployment| deployment.status.is_transitional());
     if any_in_progress {
         return Err(Unavailable::new(action, IN_PROGRESS_REASON));
     }
     if target.is_live {
         return Err(Unavailable::new(action, "this deployment is already live"));
     }
-    if target.status != "running" {
+    if target.status != DeploymentStatus::Running {
         return Err(Unavailable::new(
             action,
             format!(
@@ -144,25 +207,24 @@ pub fn rollback_mutation(
 /// `S` on a database.
 pub fn database_mutation(
     database_id: Uuid,
-    status: &str,
+    status: &DatabaseStatus,
     key_scope: Option<&str>,
 ) -> Result<Mutation, Unavailable> {
-    let action = "Start/stop";
+    let action = ActionKey::StartStop.label();
     check_scope(action, key_scope)?;
-    match status {
-        "running" => Ok(Mutation::StopDatabase { database_id }),
-        "stopped" | "failed" => Ok(Mutation::StartDatabase { database_id }),
-        "creating" | "starting" | "stopping" => Err(Unavailable::new(
+    match status.condition() {
+        Condition::Running => Ok(Mutation::StopDatabase { database_id }),
+        Condition::Stopped | Condition::Sleeping | Condition::Failed => {
+            Ok(Mutation::StartDatabase { database_id })
+        }
+        Condition::Busy | Condition::Blocked => Err(Unavailable::new(
             action,
             format!("the database is {status}"),
         )),
-        "suspended" => Err(Unavailable::new(action, "the database is suspended")),
-        "marked_for_deletion" | "pending_deletion" => {
-            Err(Unavailable::new(action, "being deleted"))
-        }
-        other => Err(Unavailable::new(
+        Condition::Deleting => Err(Unavailable::new(action, "being deleted")),
+        Condition::Unknown => Err(Unavailable::new(
             action,
-            format!("unknown status `{other}`"),
+            format!("unknown status `{status}`"),
         )),
     }
 }
@@ -174,9 +236,11 @@ mod tests {
         deployment, service, API_SERVICE, DEPLOYMENT_LIVE, DEPLOYMENT_OLD, POSTGRES,
     };
 
+    use DeploymentActivity::{Idle, Running, Unchecked};
+
     const WRITE: Option<&str> = Some("write");
 
-    fn api(status: &str) -> ServiceInfo {
+    fn api(status: &str) -> Service {
         service(API_SERVICE, "api", status, None)
     }
 
@@ -184,19 +248,19 @@ mod tests {
     fn a_running_service_can_be_deployed_restarted_and_stopped() {
         let running = api("running");
         assert_eq!(
-            service_mutation(ServiceKey::Deploy, &running, false, Some("write")),
+            service_mutation(ActionKey::Deploy, &running, Idle, Some("write")).unwrap(),
             Ok(Mutation::Deploy {
                 service_id: API_SERVICE
             })
         );
         assert_eq!(
-            service_mutation(ServiceKey::Restart, &running, false, WRITE),
+            service_mutation(ActionKey::Restart, &running, Idle, WRITE).unwrap(),
             Ok(Mutation::Restart {
                 service_id: API_SERVICE
             })
         );
         assert_eq!(
-            service_mutation(ServiceKey::StartStop, &running, false, WRITE),
+            service_mutation(ActionKey::StartStop, &running, Idle, WRITE).unwrap(),
             Ok(Mutation::StopService {
                 service_id: API_SERVICE
             })
@@ -208,14 +272,18 @@ mod tests {
         for status in ["stopped", "sleeping", "failed"] {
             let idle = api(status);
             assert_eq!(
-                service_mutation(ServiceKey::StartStop, &idle, false, WRITE),
+                service_mutation(ActionKey::StartStop, &idle, Idle, WRITE).unwrap(),
                 Ok(Mutation::StartService {
                     service_id: API_SERVICE
                 }),
                 "{status}"
             );
-            assert!(service_mutation(ServiceKey::Deploy, &idle, false, WRITE).is_ok());
-            let refused = service_mutation(ServiceKey::Restart, &idle, false, WRITE).unwrap_err();
+            assert!(service_mutation(ActionKey::Deploy, &idle, Idle, WRITE)
+                .unwrap()
+                .is_ok());
+            let refused = service_mutation(ActionKey::Restart, &idle, Idle, WRITE)
+                .unwrap()
+                .unwrap_err();
             assert_eq!(refused.reason, format!("the service is {status}"));
         }
     }
@@ -229,12 +297,10 @@ mod tests {
             ("hibernating", "unknown status `hibernating`"),
         ];
         for (status, reason) in cases {
-            for key in [
-                ServiceKey::Deploy,
-                ServiceKey::Restart,
-                ServiceKey::StartStop,
-            ] {
-                let refused = service_mutation(key, &api(status), false, WRITE).unwrap_err();
+            for key in [ActionKey::Deploy, ActionKey::Restart, ActionKey::StartStop] {
+                let refused = service_mutation(key, &api(status), Idle, WRITE)
+                    .unwrap()
+                    .unwrap_err();
                 assert_eq!(refused.reason, reason, "{status} {key:?}");
             }
         }
@@ -243,37 +309,79 @@ mod tests {
     #[test]
     fn a_deployment_in_progress_blocks_deploy_and_restart_only() {
         let running = api("running");
-        for key in [ServiceKey::Deploy, ServiceKey::Restart] {
+        for key in [ActionKey::Deploy, ActionKey::Restart] {
             assert_eq!(
-                service_mutation(key, &running, true, WRITE)
+                service_mutation(key, &running, Running, WRITE)
+                    .unwrap()
                     .unwrap_err()
                     .reason,
                 IN_PROGRESS_REASON
             );
         }
-        assert!(service_mutation(ServiceKey::StartStop, &running, true, WRITE).is_ok());
+        assert!(
+            service_mutation(ActionKey::StartStop, &running, Running, WRITE)
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn deploy_and_restart_wait_for_the_first_deployments_poll() {
+        let running = api("running");
+        for key in [ActionKey::Deploy, ActionKey::Restart] {
+            assert_eq!(
+                service_mutation(key, &running, Unchecked, WRITE)
+                    .unwrap()
+                    .unwrap_err()
+                    .reason,
+                CHECKING_DEPLOYMENT_REASON
+            );
+        }
+        assert!(
+            service_mutation(ActionKey::StartStop, &running, Unchecked, WRITE)
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_status_reason_wins_over_the_unchecked_deployments() {
+        let refused = service_mutation(ActionKey::Restart, &api("stopped"), Unchecked, WRITE)
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(refused.reason, "the service is stopped");
+    }
+
+    #[test]
+    fn rollback_is_not_a_service_key() {
+        assert_eq!(
+            service_mutation(ActionKey::Rollback, &api("running"), Idle, WRITE),
+            None
+        );
     }
 
     #[test]
     fn a_read_key_disables_every_action() {
         let running = api("running");
-        let refused =
-            service_mutation(ServiceKey::Deploy, &running, false, Some("read")).unwrap_err();
+        let refused = service_mutation(ActionKey::Deploy, &running, Idle, Some("read"))
+            .unwrap()
+            .unwrap_err();
         assert_eq!(
             refused.message(),
             "Deploy is unavailable: needs a write key"
         );
         let ready = deployment(DEPLOYMENT_OLD, "running", false, "7b3e0f2a");
         assert!(rollback_mutation(&running, &ready, &[], None, Some("read")).is_err());
-        assert!(database_mutation(POSTGRES, "running", Some("read")).is_err());
+        assert!(database_mutation(POSTGRES, &DatabaseStatus::Running, Some("read")).is_err());
     }
 
     #[test]
     fn nothing_is_allowed_before_the_key_scope_is_known() {
-        let refused =
-            service_mutation(ServiceKey::Deploy, &api("running"), false, None).unwrap_err();
+        let refused = service_mutation(ActionKey::Deploy, &api("running"), Idle, None)
+            .unwrap()
+            .unwrap_err();
         assert_eq!(refused.reason, SCOPE_UNKNOWN_REASON);
-        assert!(database_mutation(POSTGRES, "running", None).is_err());
+        assert!(database_mutation(POSTGRES, &DatabaseStatus::Running, None).is_err());
     }
 
     #[test]
@@ -322,14 +430,14 @@ mod tests {
     #[test]
     fn databases_toggle_between_running_and_stopped() {
         assert_eq!(
-            database_mutation(POSTGRES, "running", WRITE),
+            database_mutation(POSTGRES, &DatabaseStatus::Running, WRITE),
             Ok(Mutation::StopDatabase {
                 database_id: POSTGRES
             })
         );
         for status in ["stopped", "failed"] {
             assert_eq!(
-                database_mutation(POSTGRES, status, WRITE),
+                database_mutation(POSTGRES, &DatabaseStatus::from(status), WRITE),
                 Ok(Mutation::StartDatabase {
                     database_id: POSTGRES
                 })
@@ -344,7 +452,7 @@ mod tests {
             "odd",
         ] {
             assert!(
-                database_mutation(POSTGRES, status, WRITE).is_err(),
+                database_mutation(POSTGRES, &DatabaseStatus::from(status), WRITE).is_err(),
                 "{status}"
             );
         }

@@ -14,7 +14,7 @@ mod too_small;
 
 use super::app::{App, Overlay, Screen};
 use super::theme::Theme;
-use chrono::{DateTime, Utc};
+pub use crate::output::format::format_age;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::{Block, Clear};
 use ratatui::Frame;
@@ -89,16 +89,6 @@ pub fn modal(frame: &mut Frame, area: Rect, title: &str, theme: &Theme) -> Rect 
     inner
 }
 
-pub fn format_age(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
-    let seconds = (now - then).num_seconds().max(0);
-    match seconds {
-        0..=59 => format!("{seconds}s ago"),
-        60..=3599 => format!("{}m ago", seconds / 60),
-        3600..=86_399 => format!("{}h ago", seconds / 3600),
-        _ => format!("{}d ago", seconds / 86_400),
-    }
-}
-
 /// Cut `text` to `width` characters, marking the cut with an ellipsis.
 pub fn truncate(text: &str, width: usize, theme: &Theme) -> String {
     if text.chars().count() <= width {
@@ -133,6 +123,7 @@ pub fn scroll_offset(selected: usize, height: usize) -> usize {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use chrono::DateTime;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -140,7 +131,7 @@ pub(crate) mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| render(frame, app, theme)).unwrap();
         // Keep snapshots stable across version bumps; same width, so no shifts.
-        let version = env!("CARGO_PKG_VERSION");
+        let version = crate::update::CURRENT_VERSION;
         terminal
             .backend()
             .to_string()

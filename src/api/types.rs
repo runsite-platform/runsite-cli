@@ -2,23 +2,48 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-// Auth
+use super::status::{DatabaseStatus, DeploymentStatus, ServiceStatus};
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UserResponse {
+// Account
+
+/// `GET /users/me`.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct User {
     pub id: Uuid,
     pub email: String,
-    #[serde(alias = "name")]
+    #[serde(alias = "name", default)]
     pub full_name: Option<String>,
+}
+
+/// `GET /users/me/api-key`: the key this client authenticates with.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct ApiKeyIdentity {
+    pub id: Uuid,
+    pub name: String,
+    pub scope: String,
 }
 
 // Projects
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+pub struct ServiceSummary {
+    #[serde(default)]
+    pub web_services: i64,
+    #[serde(default)]
+    pub postgresql: i64,
+    #[serde(default)]
+    pub redis: i64,
+}
+
+/// An item of `GET /projects`, and what `POST /projects` answers.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Project {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub service_summary: ServiceSummary,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -58,21 +83,55 @@ pub struct ManagedDatabase {
     pub id: Uuid,
     pub kind: String,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub plan_name: Option<String>,
     pub storage_limit_gb: Option<i64>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+}
+
+/// The database a command acts on: enough to name it and to pick its routes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DatabaseTarget {
+    pub id: Uuid,
+    /// `postgresql` or `valkey`.
+    pub kind: String,
+    pub name: String,
+}
+
+impl From<ManagedDatabase> for DatabaseTarget {
+    fn from(database: ManagedDatabase) -> Self {
+        Self {
+            id: database.id,
+            kind: database.kind,
+            name: database.name,
+        }
+    }
+}
+
+impl From<DatabaseDetail> for DatabaseTarget {
+    fn from(database: DatabaseDetail) -> Self {
+        Self {
+            id: database.id,
+            kind: database.kind,
+            name: database.name,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ManagedDatabaseList {
     pub databases: Vec<ManagedDatabase>,
+    #[serde(default)]
+    pub total: i64,
 }
 
+/// What `POST /databases/{id}/start|stop` answers.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct DatabaseStatus {
+pub struct DatabaseRuntimeStatus {
     pub id: Uuid,
     pub kind: String,
-    pub status: String,
+    pub status: DatabaseStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,34 +157,39 @@ pub struct Connection {
 
 // Web Services
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct WebService {
+/// A web service, static site or worker, as every service endpoint returns it.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+pub struct Service {
     pub id: Uuid,
     pub name: String,
-    pub status: Option<String>,
+    pub status: ServiceStatus,
+    #[serde(default)]
     pub url: Option<String>,
-    pub updated_at: Option<DateTime<Utc>>,
-    pub project_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebServiceList {
-    pub web_services: Vec<WebService>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WebServiceDetail {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub url: Option<String>,
+    #[serde(default)]
     pub subdomain: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
     pub project_type: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub image_ref: Option<String>,
+    #[serde(default)]
     pub github_branch: Option<String>,
+    #[serde(default)]
     pub github_repo_full_name: Option<String>,
+    #[serde(default)]
     pub min_instances: Option<i32>,
+    #[serde(default)]
     pub max_instances: Option<i32>,
+    #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServiceList {
+    pub web_services: Vec<Service>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -179,24 +243,39 @@ pub struct WebServiceCreate {
 
 // Deployments
 
-#[derive(Debug, Deserialize, Serialize)]
+/// One deployment. `build_logs` is only filled when a single deployment is read:
+/// lists leave it null.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 pub struct Deployment {
     pub id: Uuid,
-    pub status: String,
+    pub status: DeploymentStatus,
+    #[serde(default)]
     pub branch: Option<String>,
+    #[serde(default)]
     pub commit_sha: Option<String>,
+    #[serde(default)]
     pub commit_message: Option<String>,
     #[serde(default)]
+    pub image_ref: Option<String>,
+    #[serde(default)]
     pub is_live: bool,
+    #[serde(default)]
     pub trigger_type: Option<String>,
+    #[serde(default)]
     pub error_message: Option<String>,
+    #[serde(default)]
     pub rollback_from_deployment_id: Option<Uuid>,
+    #[serde(default)]
+    pub build_logs: Option<String>,
+    #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// `GET …/deployments`, newest first.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DeploymentList {
     pub deployments: Vec<Deployment>,
+    #[serde(default)]
     pub total: i64,
 }
 
@@ -219,13 +298,46 @@ pub struct EnvVarList {
 
 // `id` must carry the existing variable's UUID: the API rejects an id-less item
 // whose key already exists with 409 Conflict.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Default)]
 pub struct BulkEnvVarItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Uuid>,
     pub key: String,
-    pub value: String,
+    /// Required unless the item deletes its variable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
     pub is_secret: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
+}
+
+impl BulkEnvVarItem {
+    pub fn deletion(variable: &EnvVar) -> Self {
+        Self {
+            id: Some(variable.id),
+            key: variable.key.clone(),
+            deleted: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// `PUT /env/bulk`: the service's variables after the change, values masked.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EnvVarBulkResult {
+    pub environment_variables: Vec<EnvVar>,
+    #[serde(default)]
+    pub created: i64,
+    #[serde(default)]
+    pub updated: i64,
+}
+
+/// What `POST …/start|stop|restart` answers: the service's runtime status.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServiceRuntimeStatus {
+    pub status: ServiceStatus,
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 // PUT /env/bulk expects the list under `variables`.
@@ -234,80 +346,15 @@ pub struct BulkEnvVars {
     pub variables: Vec<BulkEnvVarItem>,
 }
 
-// Views used by the interactive TUI. They are kept apart from the types above
-// so that the `--output json` shape of existing commands never changes.
-
 #[derive(Debug, Deserialize, Clone, PartialEq)]
-/// `active_workspace_name` is not read: the API leaves it null for API keys.
-pub struct CurrentUser {
-    pub id: Uuid,
-    pub email: String,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ApiKeyIdentity {
+/// A database in a project's detail, Postgres or Redis/Valkey alike.
+pub struct DatabaseInProject {
     pub id: Uuid,
     pub name: String,
-    pub scope: String,
-}
-
-#[derive(Debug, Deserialize, Clone, Default, PartialEq)]
-pub struct ServiceSummary {
-    #[serde(default)]
-    pub web_services: i64,
-    #[serde(default)]
-    pub postgresql: i64,
-    #[serde(default)]
-    pub redis: i64,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ProjectSummary {
-    pub id: Uuid,
-    pub name: String,
-    #[serde(default)]
-    pub service_summary: ServiceSummary,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProjectSummaryList {
-    pub projects: Vec<ProjectSummary>,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct ServiceInfo {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub url: Option<String>,
-    pub project_id: Option<Uuid>,
-    pub project_type: Option<String>,
-    pub source_type: Option<String>,
-    pub image_ref: Option<String>,
-    pub github_branch: Option<String>,
-    pub min_instances: Option<i32>,
-    pub max_instances: Option<i32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServiceInfoList {
-    pub web_services: Vec<ServiceInfo>,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct PostgresInProject {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub postgres_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct RedisInProject {
-    pub id: Uuid,
-    pub name: String,
-    pub status: String,
-    pub redis_version: Option<String>,
+    pub status: DatabaseStatus,
+    /// The API names this field after the engine.
+    #[serde(alias = "postgres_version", alias = "redis_version")]
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -315,11 +362,11 @@ pub struct ProjectDetail {
     pub id: Uuid,
     pub name: String,
     #[serde(default)]
-    pub web_services_list: Vec<ServiceInfo>,
+    pub web_services_list: Vec<Service>,
     #[serde(default)]
-    pub databases_list: Vec<PostgresInProject>,
+    pub databases_list: Vec<DatabaseInProject>,
     #[serde(default)]
-    pub redis_list: Vec<RedisInProject>,
+    pub redis_list: Vec<DatabaseInProject>,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -343,34 +390,13 @@ pub struct MetricsHistory {
     pub data_points: Vec<MetricsPoint>,
 }
 
-/// A deployment with its build logs; the list endpoint includes them too.
-#[derive(Debug, Deserialize, Clone, PartialEq)]
-pub struct DeploymentInfo {
-    pub id: Uuid,
-    pub status: String,
-    pub branch: Option<String>,
-    pub commit_sha: Option<String>,
-    pub commit_message: Option<String>,
-    pub image_ref: Option<String>,
-    #[serde(default)]
-    pub is_live: bool,
-    pub build_logs: Option<String>,
-    pub error_message: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeploymentInfoList {
-    pub deployments: Vec<DeploymentInfo>,
-}
-
 /// `GET /databases/{id}`: CPU and memory are only reported for Postgres.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct DatabaseDetail {
     pub id: Uuid,
     pub kind: String,
     pub name: String,
-    pub status: String,
+    pub status: DatabaseStatus,
     pub plan_name: Option<String>,
     pub internal_hostname: Option<String>,
     pub external_hostname: Option<String>,
@@ -409,8 +435,9 @@ mod tests {
             variables: vec![BulkEnvVarItem {
                 id: None,
                 key: "PORT".to_string(),
-                value: "8080".to_string(),
+                value: Some("8080".to_string()),
                 is_secret: false,
+                deleted: false,
             }],
         };
 
@@ -427,8 +454,9 @@ mod tests {
             variables: vec![BulkEnvVarItem {
                 id: Some(id),
                 key: "PORT".to_string(),
-                value: "8080".to_string(),
+                value: Some("8080".to_string()),
                 is_secret: false,
+                deleted: false,
             }],
         };
 
@@ -467,7 +495,7 @@ mod tests {
     fn user_response_accepts_the_name_field() {
         let json =
             r#"{"id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b", "email": "a@b.c", "name": "Ada"}"#;
-        let parsed: UserResponse = serde_json::from_str(json).unwrap();
+        let parsed: User = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.full_name.as_deref(), Some("Ada"));
     }
 
@@ -481,7 +509,7 @@ mod tests {
             "total": 1
         }"#;
 
-        let parsed: WebServiceList = serde_json::from_str(json).unwrap();
+        let parsed: ServiceList = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.web_services[0].url, None);
     }
 
@@ -546,8 +574,8 @@ mod tests {
             "min_instances": 1, "max_instances": 3, "updated_at": "2026-01-01T00:00:00Z"
         }"#;
 
-        let parsed: WebServiceDetail = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.status, "running");
+        let parsed: Service = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.status, ServiceStatus::Running);
         assert_eq!(parsed.max_instances, Some(3));
     }
 }

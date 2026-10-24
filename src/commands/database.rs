@@ -1,11 +1,14 @@
 use crate::api::{
-    ApiClient, Connection, ConnectionCreate, DatabaseCreate, DatabaseStatus, ManagedDatabase,
-    ManagedDatabaseList, ServicePlanList,
+    ApiClient, Connection, DatabaseCommand, DatabaseCreate, DatabaseEngine, DatabaseRuntimeStatus,
+    ManagedDatabase, ProjectScope, ServicePlan,
 };
-use crate::cli::{DbEngine, OutputFormat, PlanServiceType};
-use crate::output::{format::colorize_status, print_table, render};
-use anyhow::{anyhow, bail, Result};
+use crate::cli::{DbEngine, PlanServiceType};
+use crate::output::format::{colorize_status, or_placeholder, PLACEHOLDER};
+use crate::output::{write_table, Report};
+use anyhow::{bail, Result};
 use dialoguer::Confirm;
+use serde::Serialize;
+use std::io::{self, Write};
 use tabled::Tabled;
 use uuid::Uuid;
 
@@ -29,10 +32,7 @@ impl From<&ManagedDatabase> for DatabaseRow {
             name: database.name.clone(),
             engine: database.kind.clone(),
             status: colorize_status(&database.status),
-            plan: database
-                .plan_name
-                .clone()
-                .unwrap_or_else(|| "—".to_string()),
+            plan: or_placeholder(database.plan_name.as_deref()),
             id: database.id.to_string(),
         }
     }
@@ -54,6 +54,19 @@ struct PlanRow {
     storage: String,
 }
 
+impl From<&ServicePlan> for PlanRow {
+    fn from(plan: &ServicePlan) -> Self {
+        Self {
+            slug: plan.slug.clone(),
+            name: plan.name.clone(),
+            price: format!("€{:.2}", plan.monthly_price_cents as f64 / 100.0),
+            cpu: optional_number(plan.cpu_limit),
+            memory: optional_number(plan.memory_limit_mb),
+            storage: optional_number(plan.storage_limit_gb),
+        }
+    }
+}
+
 fn plan_api_type(service_type: PlanServiceType) -> &'static str {
     match service_type {
         PlanServiceType::Web => "web_service",
@@ -64,93 +77,134 @@ fn plan_api_type(service_type: PlanServiceType) -> &'static str {
 
 fn optional_number<T: ToString>(value: Option<T>) -> String {
     value
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "—".to_string())
+        .map(|number| number.to_string())
+        .unwrap_or_else(|| PLACEHOLDER.to_string())
 }
 
-async fn fetch_databases(client: &ApiClient) -> Result<Vec<ManagedDatabase>> {
-    let data: ManagedDatabaseList = client.get("/api/v1/databases?limit=100").await?;
-    Ok(data.databases)
+/// Serialized as a bare array, as `db list --output json` always was.
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Databases {
+    pub databases: Vec<ManagedDatabase>,
+    #[serde(skip)]
+    pub filtered_by_project: bool,
 }
 
-async fn resolve_plan_id(
-    client: &ApiClient,
-    service_type: PlanServiceType,
-    plan: &str,
-) -> Result<Uuid> {
-    if let Ok(id) = Uuid::parse_str(plan) {
-        return Ok(id);
-    }
-    let data: ServicePlanList = client
-        .get(&format!(
-            "/api/v1/plans?service_type={}",
-            plan_api_type(service_type)
-        ))
-        .await?;
-    data.plans
-        .iter()
-        .find(|candidate| candidate.slug == plan)
-        .map(|candidate| candidate.id)
-        .ok_or_else(|| {
-            let slugs: Vec<_> = data
-                .plans
-                .iter()
-                .map(|candidate| candidate.slug.as_str())
-                .collect();
-            anyhow!("plan '{}' not found. Available: {}", plan, slugs.join(", "))
-        })
-}
-
-async fn resolve_database(client: &ApiClient, name_or_id: &str) -> Result<ManagedDatabase> {
-    let by_id = Uuid::parse_str(name_or_id).ok();
-    let mut matched: Vec<ManagedDatabase> = fetch_databases(client)
-        .await?
-        .into_iter()
-        .filter(|database| Some(database.id) == by_id || database.name == name_or_id)
-        .collect();
-    match matched.len() {
-        0 => Err(anyhow!("database '{}' not found", name_or_id)),
-        1 => Ok(matched.remove(0)),
-        _ => Err(anyhow!(
-            "multiple databases named '{}'. Use the ID instead",
-            name_or_id
-        )),
+impl Report for Databases {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        write_table(out, self.databases.iter().map(DatabaseRow::from).collect())?;
+        if self.databases.is_empty() && self.filtered_by_project {
+            writeln!(
+                out,
+                "No databases in the current project. Use --all to list every database."
+            )?;
+        }
+        Ok(())
     }
 }
 
-pub async fn list(client: &ApiClient, format: OutputFormat) -> Result<()> {
-    let databases = fetch_databases(client).await?;
-    render(format, &databases, || {
-        print_table(databases.iter().map(DatabaseRow::from).collect())
-    })
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct Plans(pub Vec<ServicePlan>);
+
+impl Report for Plans {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        write_table(out, self.0.iter().map(PlanRow::from).collect())
+    }
 }
 
-pub async fn plans(
-    client: &ApiClient,
-    service_type: PlanServiceType,
-    format: OutputFormat,
-) -> Result<()> {
-    let data: ServicePlanList = client
-        .get(&format!(
-            "/api/v1/plans?service_type={}",
-            plan_api_type(service_type)
-        ))
-        .await?;
-    render(format, &data.plans, || {
-        print_table(
-            data.plans
-                .iter()
-                .map(|plan| PlanRow {
-                    slug: plan.slug.clone(),
-                    name: plan.name.clone(),
-                    price: format!("€{:.2}", plan.monthly_price_cents as f64 / 100.0),
-                    cpu: optional_number(plan.cpu_limit),
-                    memory: optional_number(plan.memory_limit_mb),
-                    storage: optional_number(plan.storage_limit_gb),
-                })
-                .collect(),
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct DatabaseCreated(pub ManagedDatabase);
+
+impl Report for DatabaseCreated {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        let database = &self.0;
+        writeln!(
+            out,
+            "Created {} {} ({}), status {}.",
+            database.kind,
+            database.name,
+            database.id,
+            colorize_status(&database.status)
+        )?;
+        writeln!(
+            out,
+            "Connect it to a service with: runsite db connect {} --service <service>",
+            database.id
         )
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct DatabaseConnected {
+    pub connection: Connection,
+    #[serde(skip)]
+    pub database_name: String,
+}
+
+impl Report for DatabaseConnected {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "Connected {} as secret env var {}. Deploy or restart the service to pick it up.",
+            self.database_name, self.connection.env_var_key
+        )
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(transparent)]
+pub struct DatabaseStateChanged {
+    pub status: DatabaseRuntimeStatus,
+    #[serde(skip)]
+    pub database_name: String,
+    #[serde(skip)]
+    pub action: &'static str,
+}
+
+impl Report for DatabaseStateChanged {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(
+            out,
+            "{} {}: {} accepted, status {}.",
+            self.status.kind,
+            self.database_name,
+            self.action,
+            colorize_status(&self.status.status)
+        )
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct DatabaseDeleted {
+    pub database_id: Uuid,
+    pub action: &'static str,
+    pub kind: String,
+    pub name: String,
+}
+
+impl Report for DatabaseDeleted {
+    fn write_text(&self, out: &mut dyn Write) -> io::Result<()> {
+        writeln!(out, "Deleted {} {}.", self.kind, self.name)
+    }
+}
+
+pub async fn list(client: &ApiClient, all: bool) -> Result<Databases> {
+    let project_id = if all {
+        None
+    } else {
+        client.current_project_id()
+    };
+    Ok(Databases {
+        databases: client.databases(ProjectScope::selected(project_id)).await?,
+        filtered_by_project: project_id.is_some(),
     })
+}
+
+pub async fn plans(client: &ApiClient, service_type: PlanServiceType) -> Result<Plans> {
+    Ok(Plans(client.plans(plan_api_type(service_type)).await?))
 }
 
 pub async fn create(
@@ -159,93 +213,55 @@ pub async fn create(
     plan: &str,
     engine: DbEngine,
     project: Option<&str>,
-    format: OutputFormat,
-) -> Result<()> {
-    let (plan_type, path) = match engine {
-        DbEngine::Postgres => (PlanServiceType::Postgres, "/api/v1/databases"),
-        DbEngine::Redis => (PlanServiceType::Redis, "/api/v1/redis"),
-    };
-    let project_id = match project {
-        Some(project) => Some(client.resolve_project_id(project).await?),
-        None => client
-            .current_project_id()
-            .and_then(|id| Uuid::parse_str(&id).ok()),
+) -> Result<DatabaseCreated> {
+    let (plan_type, api_engine) = match engine {
+        DbEngine::Postgres => (PlanServiceType::Postgres, DatabaseEngine::Postgres),
+        DbEngine::Redis => (PlanServiceType::Redis, DatabaseEngine::Redis),
     };
     let body = DatabaseCreate {
         name: name.to_string(),
-        plan_id: resolve_plan_id(client, plan_type, plan).await?,
-        project_id,
+        plan_id: client
+            .resolve_plan_id(plan_api_type(plan_type), plan)
+            .await?,
+        project_id: client.target_project_id(project).await?,
     };
-    let database: ManagedDatabase = client.post(path, &body).await?;
-    render(format, &database, || {
-        println!(
-            "Created {} {} ({}), status {}.",
-            database.kind,
-            database.name,
-            database.id,
-            colorize_status(&database.status)
-        );
-        println!(
-            "Connect it to a service with: runsite db connect {} --service <service>",
-            database.id
-        );
-    })
+    Ok(DatabaseCreated(
+        client.create_database(api_engine, &body).await?,
+    ))
 }
 
 pub async fn connect(
     client: &ApiClient,
     database: &str,
     service: Option<&str>,
-    format: OutputFormat,
-) -> Result<()> {
-    let target = resolve_database(client, database).await?;
+) -> Result<DatabaseConnected> {
+    let target = client.resolve_database(database).await?;
     let service_id = client.resolve_service_id(service).await?;
-    let target_type = if target.kind == "valkey" {
-        "redis"
-    } else {
-        "database"
-    };
-    let body = ConnectionCreate {
-        target_type: target_type.to_string(),
-        target_id: target.id,
-    };
-    let connection: Connection = client
-        .post(
-            &format!("/api/v1/web-services/{}/connections", service_id),
-            &body,
-        )
-        .await?;
-    render(format, &connection, || {
-        println!(
-            "Connected {} as secret env var {}. Deploy or restart the service to pick it up.",
-            target.name, connection.env_var_key
-        );
+    Ok(DatabaseConnected {
+        connection: client.connect_database(service_id, &target).await?,
+        database_name: target.name,
     })
 }
 
 pub async fn change_state(
     client: &ApiClient,
     database: &str,
-    action: &str,
-    format: OutputFormat,
-) -> Result<()> {
-    let target = resolve_database(client, database).await?;
-    let result: DatabaseStatus = client
-        .post_empty(&format!("/api/v1/databases/{}/{}", target.id, action))
-        .await?;
-    render(format, &result, || {
-        println!(
-            "{} {}: {} accepted, status {}.",
-            result.kind,
-            target.name,
-            action,
-            colorize_status(&result.status)
-        );
+    command: DatabaseCommand,
+) -> Result<DatabaseStateChanged> {
+    let target = client.resolve_database(database).await?;
+    Ok(DatabaseStateChanged {
+        status: client.database_command(target.id, command).await?,
+        database_name: target.name,
+        action: command.route(),
     })
 }
 
-pub async fn delete(client: &ApiClient, database: &str, skip_confirmation: bool) -> Result<()> {
-    let target = resolve_database(client, database).await?;
+pub async fn delete(
+    client: &ApiClient,
+    database: &str,
+    skip_confirmation: bool,
+) -> Result<DatabaseDeleted> {
+    let target = client.resolve_database(database).await?;
     if !skip_confirmation {
         let confirmed = Confirm::new()
             .with_prompt(format!(
@@ -258,9 +274,134 @@ pub async fn delete(client: &ApiClient, database: &str, skip_confirmation: bool)
             bail!("aborted");
         }
     }
-    client
-        .delete_req(&format!("/api/v1/databases/{}", target.id))
-        .await?;
-    println!("Deleted {} {}.", target.kind, target.name);
-    Ok(())
+    client.delete_database(target.id).await?;
+    Ok(DatabaseDeleted {
+        database_id: target.id,
+        action: "delete",
+        kind: target.kind,
+        name: target.name,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::test_support::*;
+    use crate::output::{render_json, render_text};
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn delete_reports_what_was_deleted() {
+        let server = MockServer::start().await;
+        serve(
+            &server,
+            "/api/v1/databases",
+            serde_json::json!({"databases": [{
+                "id": DATABASE_ID, "kind": "postgres", "name": "main", "status": "running",
+                "plan_name": null, "storage_limit_gb": null
+            }]}),
+        )
+        .await;
+        expect_request(
+            &server,
+            "DELETE",
+            &format!("/api/v1/databases/{DATABASE_ID}"),
+            204,
+            serde_json::json!({}),
+        )
+        .await;
+
+        let report = delete(&client_for(&server), "main", true).await.unwrap();
+
+        assert_eq!(
+            render_json(&report),
+            serde_json::json!({
+                "database_id": DATABASE_ID, "action": "delete", "kind": "postgres", "name": "main"
+            })
+        );
+        assert_eq!(render_text(&report), "Deleted postgres main.\n");
+    }
+
+    const OTHER_PROJECT_ID: &str = "ca83c4a9-1517-4fe3-93aa-000000000009";
+
+    fn database_in_project_json() -> serde_json::Value {
+        serde_json::json!({"id": DATABASE_ID, "kind": "postgresql", "name": "main", "status": "running",
+                           "plan_name": null, "storage_limit_gb": null, "project_id": PROJECT_ID})
+    }
+
+    async fn serve_databases_in_two_projects(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param("project_id", PROJECT_ID))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"databases": [database_in_project_json()], "total": 1}),
+            ))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/databases"))
+            .and(query_param_is_missing("project_id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"databases": [
+                {"id": DATABASE_ID, "kind": "postgresql", "name": "main", "status": "running",
+                 "plan_name": null, "storage_limit_gb": null, "project_id": PROJECT_ID},
+                {"id": "3f2a1b4c-0000-4000-8000-000000000005", "kind": "valkey", "name": "cache",
+                 "status": "running", "plan_name": null, "storage_limit_gb": null,
+                 "project_id": OTHER_PROJECT_ID}
+            ]})))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn list_shows_the_selected_project_unless_all() {
+        let server = MockServer::start().await;
+        serve_databases_in_two_projects(&server).await;
+        let client = client_in_project(&server, Some(PROJECT_ID));
+
+        let scoped = list(&client, false).await.unwrap();
+        let everything = list(&client, true).await.unwrap();
+
+        assert_eq!(render_json(&scoped).as_array().unwrap().len(), 1);
+        assert_eq!(render_json(&everything).as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_database_in_another_project_points_at_that_project() {
+        let server = MockServer::start().await;
+        serve_databases_in_two_projects(&server).await;
+        serve(
+            &server,
+            "/api/v1/projects",
+            serde_json::json!({"projects": [
+                {"id": OTHER_PROJECT_ID, "name": "shop", "description": null}
+            ], "total": 1}),
+        )
+        .await;
+
+        let error = change_state(
+            &client_in_project(&server, Some(PROJECT_ID)),
+            "cache",
+            DatabaseCommand::Start,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "database 'cache' belongs to project 'shop'. Switch with: runsite project use \"shop\""
+        );
+    }
+
+    #[test]
+    fn a_plan_without_limits_shows_placeholders() {
+        let plan: ServicePlan = serde_json::from_value(serde_json::json!({
+            "id": DATABASE_ID, "slug": "free", "name": "Free", "monthly_price_cents": 0,
+            "cpu_limit": null, "memory_limit_mb": null, "storage_limit_gb": null
+        }))
+        .unwrap();
+        let text = render_text(&Plans(vec![plan]));
+        assert!(text.contains("€0.00"));
+        assert!(text.contains(PLACEHOLDER));
+    }
 }

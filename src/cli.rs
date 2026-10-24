@@ -113,6 +113,14 @@ pub enum Commands {
     #[command(subcommand)]
     Context(ContextCommands),
 
+    /// Update runsite to the latest release
+    #[command(visible_alias = "update")]
+    Upgrade {
+        /// Only report whether a newer version exists
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Generate shell completion scripts
     Completions {
         /// Shell to generate completions for
@@ -155,11 +163,21 @@ pub enum ServiceCommands {
         /// Service name or ID
         service: Option<String>,
     },
+
+    /// Delete a service with its disk and env vars (needs an admin API key)
+    Delete {
+        /// Service name or ID
+        service: String,
+
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy)]
 pub enum ServiceType {
-    WebService,
+    Service,
     StaticSite,
     Worker,
 }
@@ -167,7 +185,7 @@ pub enum ServiceType {
 impl ServiceType {
     pub fn as_api_value(self) -> &'static str {
         match self {
-            ServiceType::WebService => "web_service",
+            ServiceType::Service => "web_service",
             ServiceType::StaticSite => "static_site",
             ServiceType::Worker => "worker",
         }
@@ -303,8 +321,12 @@ pub enum PlanServiceType {
 
 #[derive(Subcommand)]
 pub enum DbCommands {
-    /// List Postgres and Redis databases
-    List,
+    /// List Postgres and Redis databases in the current project
+    List {
+        /// List databases from every project, not just the selected one
+        #[arg(long)]
+        all: bool,
+    },
 
     /// Create a database (billed from your balance)
     Create {

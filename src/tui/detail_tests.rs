@@ -1,8 +1,9 @@
-use super::action::{Action, Effect, FetchError, Payload, Request};
+use super::action::{Action, Effect, Payload, Request};
 use super::app::{update, Screen};
 use super::detail::DetailTab;
 use super::fixtures::*;
 use super::log_buffer::LogQuery;
+use crate::error::ApiError;
 use ratatui::crossterm::event::KeyCode;
 
 fn detail(app: &super::app::App) -> &super::detail::ServiceDetailState {
@@ -16,7 +17,11 @@ fn log_fetches(effects: &[Effect]) -> Vec<LogQuery> {
     effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::FetchLogs { query, .. } => Some(*query),
+            Effect::Fetch {
+                request: Request::Logs(_),
+                log_query,
+                ..
+            } => *log_query,
             _ => None,
         })
         .collect()
@@ -86,17 +91,19 @@ fn enter_on_postgres_opens_it_with_the_version_from_the_project() {
 
 #[test]
 fn a_database_being_deleted_cannot_be_opened() {
-    let mut app = loaded_dashboard();
-    let mut detail = landing_detail();
-    detail.databases_list[0].status = "pending_deletion".to_string();
-    app.dashboard.details.insert(LANDING, detail);
-    update(&mut app, key(KeyCode::Tab));
-    for _ in 0..3 {
-        update(&mut app, char_key('j'));
+    for deleting_status in ["pending_deletion", "marked_for_deletion"] {
+        let mut app = loaded_dashboard();
+        let mut detail = landing_detail();
+        detail.databases_list[0].status = deleting_status.into();
+        app.dashboard.details.insert(LANDING, detail);
+        update(&mut app, key(KeyCode::Tab));
+        for _ in 0..3 {
+            update(&mut app, char_key('j'));
+        }
+        update(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.screen, Screen::Dashboard), "{deleting_status}");
+        assert_eq!(app.toast.as_ref().unwrap().text, "Being deleted");
     }
-    update(&mut app, key(KeyCode::Enter));
-    assert!(matches!(app.screen, Screen::Dashboard));
-    assert_eq!(app.toast.as_ref().unwrap().text, "Being deleted");
 }
 
 #[test]
@@ -174,13 +181,13 @@ fn a_400_from_logs_becomes_the_tab_message() {
     fail(
         &mut app,
         Request::Logs(API_SERVICE),
-        FetchError::Rejected {
+        ApiError::Rejected {
             status: 400,
             message: "Unable to fetch logs: container is starting".to_string(),
         },
     );
     assert_eq!(
-        detail(&app).logs.status_message.as_deref(),
+        detail(&app).logs.status_message(),
         Some("Unable to fetch logs: container is starting")
     );
     assert!(app.toast.is_none());
@@ -193,11 +200,11 @@ fn the_filter_keys_on_the_logs_tab_are_text_while_searching() {
     for character in "q2".chars() {
         update(&mut app, char_key(character));
     }
-    assert_eq!(detail(&app).logs.search, "q2");
+    assert_eq!(detail(&app).logs.search(), "q2");
     assert_eq!(detail(&app).tab, DetailTab::Logs);
     assert!(app.exit.is_none());
     update(&mut app, key(KeyCode::Enter));
-    assert!(!detail(&app).logs.editing_search);
+    assert!(!detail(&app).logs.editing_search());
 }
 
 #[test]
@@ -210,7 +217,7 @@ fn arrows_scroll_logs_sideways_only_with_wrap_off() {
     update(&mut app, char_key('w'));
     update(&mut app, key(KeyCode::Right));
     assert_eq!(detail(&app).tab, DetailTab::Logs);
-    assert_eq!(detail(&app).logs.horizontal_offset, 8);
+    assert_eq!(detail(&app).logs.horizontal_offset(), 8);
     update(&mut app, key(KeyCode::Tab));
     assert_eq!(detail(&app).tab, DetailTab::Deploys);
 }
@@ -242,7 +249,7 @@ fn a_service_that_disappears_returns_to_the_dashboard() {
     fail(
         &mut app,
         Request::Service(API_SERVICE),
-        FetchError::NotFound {
+        ApiError::NotFound {
             message: "Web service not found".to_string(),
         },
     );
@@ -315,7 +322,7 @@ fn a_log_reply_from_before_reopening_is_dropped() {
 fn a_service_being_deleted_cannot_be_opened() {
     let mut app = loaded_dashboard();
     let mut project = landing_detail();
-    project.web_services_list[0].status = "pending_deletion".to_string();
+    project.web_services_list[0].status = "pending_deletion".into();
     app.dashboard.details.insert(LANDING, project);
     update(&mut app, key(KeyCode::Tab));
     update(&mut app, key(KeyCode::Enter));

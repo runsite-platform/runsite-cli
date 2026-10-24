@@ -1,5 +1,5 @@
 use super::{centered, modal};
-use crate::tui::action_keys::Confirm;
+use crate::tui::action_gate::Confirm;
 use crate::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -12,7 +12,7 @@ pub fn render(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let inner = modal(frame, box_area, "Confirm", theme);
     let lines = vec![
         Line::from(vec![
-            Span::raw(format!(" {} ", confirm.verb)),
+            Span::raw(format!(" {} ", confirm.verb())),
             Span::styled(
                 confirm.target.clone(),
                 Style::default().add_modifier(Modifier::BOLD),

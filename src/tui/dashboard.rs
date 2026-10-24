@@ -1,6 +1,9 @@
-use crate::api::{
-    DeploymentInfo, PostgresInProject, ProjectDetail, ProjectSummary, RedisInProject, ServiceInfo,
-};
+use super::action::{Payload, Request};
+use super::action_gate::{plain_confirm, service_confirm, Confirm};
+use super::actions::DeploymentActivity;
+use super::actions::{database_mutation, service_mutation, ActionKey, Unavailable};
+use super::poller::Cadence;
+use crate::api::{DatabaseInProject, Deployment, Project, ProjectDetail, Service, Status};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -28,17 +31,25 @@ pub struct ProjectRow<'a> {
 /// A row of the Resources pane, borrowed from the loaded project data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Resource<'a> {
-    Service(&'a ServiceInfo),
-    Postgres(&'a PostgresInProject),
-    Redis(&'a RedisInProject),
+    Service(&'a Service),
+    Postgres(&'a DatabaseInProject),
+    Redis(&'a DatabaseInProject),
 }
 
 impl<'a> Resource<'a> {
     pub fn name(&self) -> &'a str {
         match self {
             Resource::Service(service) => &service.name,
-            Resource::Postgres(database) => &database.name,
-            Resource::Redis(database) => &database.name,
+            Resource::Postgres(database) | Resource::Redis(database) => &database.name,
+        }
+    }
+
+    /// The database behind a database row, and the engine name shown for it.
+    pub fn database(&self) -> Option<(&'a DatabaseInProject, &'static str)> {
+        match self {
+            Resource::Service(_) => None,
+            Resource::Postgres(database) => Some((database, "postgres")),
+            Resource::Redis(database) => Some((database, "valkey")),
         }
     }
 }
@@ -46,8 +57,8 @@ impl<'a> Resource<'a> {
 #[derive(Debug, Default)]
 pub struct DashboardState {
     /// `None` until the first response arrives.
-    pub projects: Option<Vec<ProjectSummary>>,
-    pub unassigned: Option<Vec<ServiceInfo>>,
+    pub projects: Option<Vec<Project>>,
+    pub unassigned: Option<Vec<Service>>,
     pub details: HashMap<Uuid, ProjectDetail>,
     pub selected_project: Option<ProjectChoice>,
     pub resource_cursor: usize,
@@ -58,7 +69,7 @@ pub struct DashboardState {
     pub editing_filter: Option<Pane>,
     /// Newest deployment per service, polled for the selected service so that
     /// `D` and `R` can be refused while a deployment is in progress.
-    pub latest_deployments: HashMap<Uuid, Option<DeploymentInfo>>,
+    pub latest_deployments: HashMap<Uuid, Option<Deployment>>,
 }
 
 /// Case-insensitive substring match; `filter` is already lowercase.
@@ -67,6 +78,15 @@ fn matches_filter(name: &str, filter: &str) -> bool {
 }
 
 impl DashboardState {
+    /// Read from the fast `deployments?limit=1` poll of `service_id`.
+    pub fn deployment_activity(&self, service_id: Uuid) -> DeploymentActivity {
+        match self.latest_deployments.get(&service_id) {
+            None => DeploymentActivity::Unchecked,
+            Some(Some(latest)) if latest.status.is_transitional() => DeploymentActivity::Running,
+            Some(_) => DeploymentActivity::Idle,
+        }
+    }
+
     pub fn new(preferred_project: Option<Uuid>) -> Self {
         Self {
             selected_project: preferred_project.map(ProjectChoice::Project),
@@ -156,24 +176,21 @@ impl DashboardState {
     /// Web services, then Postgres, then Redis/Valkey.
     fn resource_iter(&self) -> impl Iterator<Item = Resource<'_>> {
         let filter = self.resource_filter.to_lowercase();
-        let (services, databases, redis): (
-            &[ServiceInfo],
-            &[PostgresInProject],
-            &[RedisInProject],
-        ) = match self.selected_project {
-            Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
-                Some(detail) => (
-                    &detail.web_services_list,
-                    &detail.databases_list,
-                    &detail.redis_list,
-                ),
+        let (services, databases, redis): (&[Service], &[DatabaseInProject], &[DatabaseInProject]) =
+            match self.selected_project {
+                Some(ProjectChoice::Project(id)) => match self.details.get(&id) {
+                    Some(detail) => (
+                        &detail.web_services_list,
+                        &detail.databases_list,
+                        &detail.redis_list,
+                    ),
+                    None => (&[], &[], &[]),
+                },
+                Some(ProjectChoice::Unassigned) => {
+                    (self.unassigned.as_deref().unwrap_or_default(), &[], &[])
+                }
                 None => (&[], &[], &[]),
-            },
-            Some(ProjectChoice::Unassigned) => {
-                (self.unassigned.as_deref().unwrap_or_default(), &[], &[])
-            }
-            None => (&[], &[], &[]),
-        };
+            };
         services
             .iter()
             .map(Resource::Service)
@@ -211,5 +228,104 @@ impl DashboardState {
             Pane::Projects => &self.project_filter,
             Pane::Resources => &self.resource_filter,
         }
+    }
+
+    /// What the dashboard keeps fresh, and how often.
+    pub fn polls(&self) -> Vec<(Request, Cadence)> {
+        let mut polls = vec![
+            (Request::Projects, Cadence::seconds(30)),
+            // Needed on every dashboard view: the Unassigned row only exists
+            // when this list has services without a project.
+            (Request::UnassignedServices, Cadence::seconds(30)),
+        ];
+        // Wait for the list: a project saved in the config may no longer exist.
+        if let (Some(_), Some(ProjectChoice::Project(id))) = (&self.projects, self.selected_project)
+        {
+            polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
+        }
+        if self.focus == Pane::Resources {
+            if let Some(Resource::Service(service)) = self.selected_resource() {
+                polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
+            }
+        }
+        polls
+    }
+
+    /// Forget the deployment state of services the dashboard no longer polls,
+    /// all of them while it is hidden: it goes stale, and the next visit must
+    /// wait for a fresh answer instead of trusting it.
+    pub fn forget_unpolled(&mut self, shown: bool) {
+        if !shown {
+            self.latest_deployments.clear();
+            return;
+        }
+        let polled: Vec<Request> = self
+            .polls()
+            .into_iter()
+            .map(|(request, _)| request)
+            .collect();
+        self.latest_deployments
+            .retain(|service_id, _| polled.contains(&Request::LatestDeployment(*service_id)));
+    }
+
+    /// What `key` would do to the selected resource. `None` when the key
+    /// means nothing here, `Err` when it is disabled.
+    pub fn resolve_action(
+        &self,
+        key: ActionKey,
+        key_scope: Option<&str>,
+    ) -> Option<Result<Confirm, Unavailable>> {
+        // Only the focused pane's selection is a target: in the one-pane
+        // layout the resources list may not even be visible.
+        if self.focus != Pane::Resources {
+            return None;
+        }
+        let resource = self.selected_resource()?;
+        if let Resource::Service(service) = resource {
+            let deployments = self.deployment_activity(service.id);
+            return Some(
+                service_mutation(key, service, deployments, key_scope)?
+                    .map(|mutation| service_confirm(mutation, service)),
+            );
+        }
+        let (database, _) = resource.database()?;
+        (key == ActionKey::StartStop).then(|| {
+            database_mutation(database.id, &database.status, key_scope)
+                .map(|mutation| plain_confirm(mutation, &database.name))
+        })
+    }
+
+    /// Takes in a reply to one of the dashboard's requests; others are ignored.
+    pub fn apply(&mut self, request: Request, payload: Payload) {
+        match payload {
+            Payload::Projects(projects) => self.projects = Some(projects),
+            Payload::ProjectDetail(detail) => {
+                self.details.insert(detail.id, detail);
+            }
+            Payload::UnassignedServices(services) => self.unassigned = Some(services),
+            Payload::LatestDeployment(deployment) => {
+                if let Request::LatestDeployment(service_id) = request {
+                    self.latest_deployments
+                        .insert(service_id, deployment.map(|deployment| *deployment));
+                }
+                return;
+            }
+            _ => return,
+        }
+        self.normalize_selection();
+    }
+
+    /// True when the 404 was for a project, which is then dropped from the
+    /// list so it is not polled again.
+    pub fn vanished(&mut self, request: Request) -> bool {
+        let Request::ProjectDetail(id) = request else {
+            return false;
+        };
+        self.details.remove(&id);
+        if let Some(projects) = &mut self.projects {
+            projects.retain(|project| project.id != id);
+        }
+        self.normalize_selection();
+        true
     }
 }

@@ -49,20 +49,19 @@ fn machine_key_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{ActiveProfile, Profile};
     use crate::error::ApiError;
-    use std::sync::{Arc, Mutex};
     use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     const USER: &str = r#"{"id": "8f14e45f-ceea-467a-9f0a-1c2d3e4f5a6b", "email": "ada@example.com", "name": "Ada"}"#;
 
     fn anonymous_client(server: &MockServer) -> ApiClient {
-        ApiClient::new(
-            server.uri(),
-            Arc::new(Mutex::new(Config::default())),
-            "default".to_string(),
-        )
+        let profile = Profile {
+            api_url: server.uri(),
+            ..Profile::default()
+        };
+        ApiClient::new(ActiveProfile::in_memory("default", profile, None))
     }
 
     #[tokio::test]
@@ -155,17 +154,11 @@ mod tests {
             .err()
             .unwrap();
 
-        match error.downcast_ref::<ApiError>() {
-            Some(ApiError::Http {
-                status: 403,
-                code: Some(code),
-                message,
-                ..
-            }) => {
-                assert_eq!(code, "registration_review_required");
-                assert_eq!(message, "Your account is awaiting review");
-            }
-            other => panic!("unexpected error: {:?}", other),
-        }
+        assert_eq!(
+            error.downcast_ref::<ApiError>(),
+            Some(&ApiError::Forbidden {
+                message: "Your account is awaiting review".to_string()
+            })
+        );
     }
 }

@@ -1,7 +1,6 @@
 use super::{format_age, key_label, truncate};
-use crate::tui::app::{App, Overlay, Screen};
-use crate::tui::dashboard::Pane;
-use crate::tui::detail::DetailTab;
+use crate::tui::app::App;
+use crate::tui::keymap::{self, Command};
 use crate::tui::status::Tone;
 use crate::tui::theme::Theme;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -9,88 +8,17 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
-    match (&app.overlay, &app.screen) {
-        (Some(Overlay::ProfilePicker(_)), _) => {
-            vec![("enter", "switch"), ("esc", "close"), ("q", "quit")]
-        }
-        (Some(Overlay::Help), _) => vec![("any key", "close")],
-        (None, Screen::Login(login)) if login.navigating => {
-            vec![
-                ("enter", "back to the form"),
-                ("P", "profile"),
-                ("?", "help"),
-                ("q", "quit"),
-            ]
-        }
-        (Some(Overlay::Confirm(_)), _) => vec![("y", "confirm"), ("n / esc", "cancel")],
-        (None, Screen::Login(_)) => vec![
-            ("ctrl+←/→", "tab"),
-            ("tab", "next field"),
-            ("enter", "log in"),
-            ("ctrl+c", "quit"),
-        ],
-        (None, Screen::Blocked { .. }) => vec![("q", "quit")],
-        (None, Screen::DatabaseDetail(_)) => vec![("esc", "back"), ("?", "help"), ("q", "quit")],
-        (None, Screen::ServiceDetail(detail)) if detail.logs.editing_search => {
-            vec![("enter", "search"), ("esc", "clear / close")]
-        }
-        (None, Screen::ServiceDetail(detail)) if detail.deployment_view.is_some() => {
-            vec![("j/k", "scroll"), ("g/G", "top/bottom"), ("esc", "back")]
-        }
-        (None, Screen::ServiceDetail(detail)) => match detail.tab {
-            DetailTab::Overview => vec![("1-3", "tabs"), ("esc", "back"), ("?", "help")],
-            DetailTab::Logs => vec![
-                ("/", "search"),
-                ("f", "follow"),
-                ("w", "wrap"),
-                ("c", "clear"),
-                ("esc", "back"),
-                ("?", "help"),
-            ],
-            DetailTab::Deploys => vec![("enter", "details"), ("esc", "back"), ("?", "help")],
-        },
-        (None, Screen::Dashboard) if app.dashboard.editing_filter.is_some() => {
-            vec![("enter", "apply"), ("esc", "clear / close")]
-        }
-        (None, Screen::Dashboard) => {
-            let enter = match app.dashboard.focus {
-                Pane::Projects => ("enter", "select"),
-                Pane::Resources => ("enter", "open"),
-            };
-            vec![enter, ("/", "filter"), ("?", "help"), ("q", "quit")]
-        }
-    }
-}
-
-/// Action keys that apply here; disabled ones are drawn greyed out.
-fn action_hints(app: &App) -> Vec<(&'static str, &'static str, bool)> {
-    if app.overlay.is_some() {
-        return Vec::new();
-    }
-    let keys: &[char] = match &app.screen {
-        Screen::Dashboard if app.dashboard.editing_filter.is_none() => &['D', 'R', 'S'],
-        Screen::ServiceDetail(detail) if detail.deployment_view.is_some() => &['B'],
-        Screen::ServiceDetail(detail) => match detail.tab {
-            DetailTab::Overview => &['D', 'R', 'S'],
-            DetailTab::Deploys => &['B', 'D'],
-            DetailTab::Logs => &[],
-        },
-        Screen::DatabaseDetail(_) => &['S'],
-        _ => &[],
-    };
-    keys.iter()
-        .filter_map(|key| {
-            let resolved = app.resolve_action(*key)?;
-            let (label, meaning) = match (key, &resolved) {
-                ('D', _) => ("D", "deploy"),
-                ('R', _) => ("R", "restart"),
-                ('B', _) => ("B", "rollback"),
-                (_, Ok(confirm)) if confirm.verb == "Start" => ("S", "start"),
-                (_, Ok(_)) => ("S", "stop"),
-                (_, Err(_)) => ("S", "start/stop"),
-            };
-            Some((label, meaning, resolved.is_ok()))
+/// The current mode's hints in table order. Action keys show their live
+/// meaning (start or stop) and are greyed out while disabled; ones that mean
+/// nothing right now are left out.
+fn hints(app: &App) -> Vec<(&'static str, &'static str, bool)> {
+    keymap::bindings(keymap::mode(app))
+        .into_iter()
+        .filter_map(|binding| match binding.command {
+            Command::Action(key) => app
+                .action_hint(key)
+                .map(|hint| (hint.key, hint.hint, hint.enabled)),
+            _ => binding.hint.map(|hint| (hint.key, hint.text, true)),
         })
         .collect()
 }
@@ -125,13 +53,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let left_line = match &app.toast {
         Some(toast) => Line::styled(format!(" {}", toast.text), theme.tone(toast.tone)),
         None => {
-            let mut all: Vec<(&str, &str, bool)> = hints(app)
-                .into_iter()
-                .map(|(key, meaning)| (key, meaning, true))
-                .collect();
-            let actions = action_hints(app);
-            let insert_at = 1.min(all.len());
-            all.splice(insert_at..insert_at, actions);
+            let all = hints(app);
 
             // Hints that do not fit are dropped whole, keeping a gap before the freshness text.
             let available = usize::from(left.width).saturating_sub(1);

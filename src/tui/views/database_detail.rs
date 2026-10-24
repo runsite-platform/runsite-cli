@@ -1,6 +1,7 @@
+use crate::api::DatabaseStatus;
 use crate::tui::app::App;
 use crate::tui::detail::DatabaseDetailState;
-use crate::tui::status::database_look;
+use crate::tui::status::look;
 use crate::tui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -41,7 +42,7 @@ pub fn render(
         return;
     };
     let empty = || theme.empty_value().to_string();
-    let look = database_look(&detail.status);
+    let look = look(&detail.status);
     let mut lines = vec![
         row("Engine", detail.kind.clone(), theme),
         row(
@@ -73,7 +74,7 @@ pub fn render(
         ),
     ];
     if detail.kind == "postgresql" {
-        let running = detail.status == "running";
+        let running = detail.status == DatabaseStatus::Running;
         let percent = |value: Option<f64>| match value {
             Some(value) if running => format!("{value:.1}%"),
             _ => empty(),

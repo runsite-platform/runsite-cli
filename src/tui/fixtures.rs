@@ -1,11 +1,12 @@
 //! Builders shared by the TUI tests.
 
-use super::action::{Action, Effect, FetchError, Payload, Request};
+use super::action::{Action, Effect, Payload, Request};
 use super::app::{App, Session};
 use crate::api::{
-    ApiKeyIdentity, CurrentUser, DatabaseDetail, DeploymentInfo, MetricsPoint, PostgresInProject,
-    ProjectDetail, ProjectSummary, RedisInProject, ResourceMetrics, ServiceInfo, ServiceSummary,
+    ApiKeyIdentity, DatabaseDetail, DatabaseInProject, Deployment, MetricsPoint, Project,
+    ProjectDetail, ResourceMetrics, Service, ServiceSummary, User,
 };
+use crate::error::ApiError;
 use chrono::{DateTime, TimeZone, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use uuid::Uuid;
@@ -60,24 +61,51 @@ pub fn fetched(effects: &[Effect]) -> Vec<Request> {
         .collect()
 }
 
-/// Deliver a successful response for `request` in the current generation.
+/// Answer the send of `request` that is waiting for its reply.
 pub fn deliver(app: &mut App, request: Request, payload: Payload) -> Vec<Effect> {
-    let action = Action::Loaded {
-        generation: app.generation,
-        request,
-        result: Ok(payload),
-    };
-    super::app::update(app, action)
+    answer(app, request, Ok(payload))
 }
 
-/// Deliver a failed response for `request` in the current generation.
-pub fn fail(app: &mut App, request: Request, error: FetchError) -> Vec<Effect> {
-    let action = Action::Loaded {
-        generation: app.generation,
-        request,
-        result: Err(error),
-    };
-    super::app::update(app, action)
+/// Fail the send of `request` that is waiting for its reply.
+pub fn fail(app: &mut App, request: Request, error: ApiError) -> Vec<Effect> {
+    answer(app, request, Err(error))
+}
+
+/// The next regular poll sends `request` again, and `payload` answers it.
+pub fn next_poll(app: &mut App, request: Request, payload: Payload) -> Vec<Effect> {
+    resend(app, request);
+    deliver(app, request, payload)
+}
+
+/// The next regular poll sends `request` again, and it fails with `error`.
+pub fn fail_next_poll(app: &mut App, request: Request, error: ApiError) -> Vec<Effect> {
+    resend(app, request);
+    fail(app, request, error)
+}
+
+fn resend(app: &mut App, request: Request) {
+    app.poller.refresh_all(app.now);
+    let now = app.now;
+    super::app::update(app, Action::Tick { now });
+    assert!(
+        app.poller.in_flight(&request).is_some(),
+        "{request:?} is not polled on this screen"
+    );
+}
+
+fn answer(app: &mut App, request: Request, result: Result<Payload, ApiError>) -> Vec<Effect> {
+    let ticket = app
+        .poller
+        .in_flight(&request)
+        .unwrap_or_else(|| panic!("{request:?} was not sent, so nothing can answer it"));
+    super::app::update(
+        app,
+        Action::Loaded {
+            ticket,
+            request,
+            result,
+        },
+    )
 }
 
 pub fn write_key() -> ApiKeyIdentity {
@@ -97,17 +125,19 @@ pub fn no_deployment_running(app: &mut App, service_id: Uuid) {
     );
 }
 
-pub fn user() -> CurrentUser {
-    CurrentUser {
+pub fn user() -> User {
+    User {
         id: Uuid::from_u128(1),
         email: "ada@example.com".to_string(),
+        full_name: None,
     }
 }
 
-fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> ProjectSummary {
-    ProjectSummary {
+fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> Project {
+    Project {
         id,
         name: name.to_string(),
+        description: None,
         service_summary: ServiceSummary {
             web_services,
             postgresql,
@@ -116,26 +146,29 @@ fn project(id: Uuid, name: &str, web_services: i64, postgresql: i64) -> ProjectS
     }
 }
 
-pub fn projects() -> Vec<ProjectSummary> {
+pub fn projects() -> Vec<Project> {
     vec![
         project(LANDING, "landing", 3, 1),
         project(BLOG, "blog", 1, 0),
     ]
 }
 
-pub fn service(id: Uuid, name: &str, status: &str, project_id: Option<Uuid>) -> ServiceInfo {
-    ServiceInfo {
+pub fn service(id: Uuid, name: &str, status: &str, project_id: Option<Uuid>) -> Service {
+    Service {
         id,
         name: name.to_string(),
-        status: status.to_string(),
+        status: status.into(),
         url: Some(format!("https://{name}-x.runsite.app")),
+        subdomain: Some(format!("{name}-x")),
         project_id,
         project_type: Some("web_service".to_string()),
         source_type: Some("git".to_string()),
         image_ref: None,
         github_branch: Some("main".to_string()),
+        github_repo_full_name: None,
         min_instances: Some(1),
         max_instances: Some(1),
+        updated_at: None,
     }
 }
 
@@ -150,26 +183,24 @@ pub fn landing_detail() -> ProjectDetail {
             service(WEB_SERVICE, "web", "running", Some(LANDING)),
             service(WORKER_SERVICE, "worker", "stopped", Some(LANDING)),
         ],
-        databases_list: vec![PostgresInProject {
+        databases_list: vec![DatabaseInProject {
             id: POSTGRES,
             name: "pg-main".to_string(),
-            status: "running".to_string(),
-            postgres_version: Some("16".to_string()),
+            status: "running".into(),
+            version: Some("16".to_string()),
         }],
-        redis_list: vec![RedisInProject {
+        redis_list: vec![DatabaseInProject {
             id: REDIS,
             name: "cache".to_string(),
-            status: "stopped".to_string(),
-            redis_version: Some("7.2".to_string()),
+            status: "stopped".into(),
+            version: Some("7.2".to_string()),
         }],
     }
 }
 
-pub fn unassigned() -> Vec<ServiceInfo> {
-    vec![
-        service(LOOSE_SERVICE, "scratch", "sleeping", None),
-        service(API_SERVICE, "api", "running", Some(LANDING)),
-    ]
+/// What `GET /web-services?project_id=none` answers.
+pub fn unassigned() -> Vec<Service> {
+    vec![service(LOOSE_SERVICE, "scratch", "sleeping", None)]
 }
 
 /// A logged-in app showing the loaded dashboard with `landing` selected.
@@ -201,10 +232,10 @@ pub const DEPLOYMENT_LIVE: Uuid = Uuid::from_u128(0x3f2a9c1d_0000_4000_8000_0000
 pub const DEPLOYMENT_OLD: Uuid = Uuid::from_u128(0x7b3e0f2a_0000_4000_8000_000000000012);
 pub const DEPLOYMENT_NEW: Uuid = Uuid::from_u128(0x4b1c2d3e_0000_4000_8000_000000000013);
 
-pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> DeploymentInfo {
-    DeploymentInfo {
+pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> Deployment {
+    Deployment {
         id,
-        status: status.to_string(),
+        status: status.into(),
         branch: Some("main".to_string()),
         commit_sha: Some(sha.to_string()),
         commit_message: Some(format!("change {sha}")),
@@ -213,12 +244,14 @@ pub fn deployment(id: Uuid, status: &str, is_live: bool, sha: &str) -> Deploymen
         build_logs: Some(
             "Step 1/3 : FROM node:22\nStep 2/3 : RUN npm ci\nStep 3/3 : CMD npm start".to_string(),
         ),
+        trigger_type: Some("manual".to_string()),
         error_message: None,
+        rollback_from_deployment_id: None,
         created_at: Some(at(-7200)),
     }
 }
 
-pub fn deployments() -> Vec<DeploymentInfo> {
+pub fn deployments() -> Vec<Deployment> {
     vec![
         deployment(DEPLOYMENT_LIVE, "running", true, "3f2a9c1d"),
         deployment(DEPLOYMENT_OLD, "running", false, "7b3e0f2a"),
@@ -250,7 +283,7 @@ pub fn postgres_detail() -> DatabaseDetail {
         id: POSTGRES,
         kind: "postgresql".to_string(),
         name: "pg-main".to_string(),
-        status: "running".to_string(),
+        status: "running".into(),
         plan_name: Some("Starter".to_string()),
         internal_hostname: Some("pg-main.internal".to_string()),
         external_hostname: None,

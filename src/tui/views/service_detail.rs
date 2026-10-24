@@ -1,9 +1,9 @@
 use super::{format_age, scroll_offset, truncate};
-use crate::api::DeploymentInfo;
+use crate::api::{Deployment, DeploymentStatus, Status};
 use crate::tui::app::App;
 use crate::tui::detail::{short_ref, DeploymentView, DetailTab, ServiceDetailState};
 use crate::tui::log_buffer::LogLine;
-use crate::tui::status::{deployment_look, service_look, Tone};
+use crate::tui::status::{look, Tone};
 use crate::tui::theme::Theme;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -48,7 +48,7 @@ pub fn render(
     detail: &ServiceDetailState,
     theme: &Theme,
 ) {
-    let look = detail.status().map(service_look);
+    let look = detail.status().map(look);
     let mut title = format!(" {}", detail.name);
     if let (Some(look), Some(status)) = (look, detail.status()) {
         title.push_str(&format!(
@@ -110,7 +110,7 @@ fn render_overview(
         return;
     };
     let empty = theme.empty_value().to_string();
-    let look = service_look(&service.status);
+    let look = look(&service.status);
     let mut lines = vec![Line::from(vec![
         label("Status", theme),
         Span::styled(
@@ -157,7 +157,7 @@ fn render_overview(
     let in_progress = detail
         .latest_deployment
         .as_ref()
-        .filter(|deployment| deployment_look(&deployment.status).transitional);
+        .filter(|deployment| deployment.status.is_transitional());
     if let Some(deployment) = in_progress {
         lines.push(Line::from(vec![
             label("Deploying", theme),
@@ -216,7 +216,7 @@ fn render_overview(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn deployment_summary(deployment: &DeploymentInfo, app: &App, theme: &Theme) -> String {
+fn deployment_summary(deployment: &Deployment, app: &App, theme: &Theme) -> String {
     let mut summary = short_ref(deployment);
     if let Some(message) = &deployment.commit_message {
         let first_line = message.lines().next().unwrap_or_default();
@@ -328,34 +328,34 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
             format!(
                 "{}follow {}{}wrap {}",
                 theme.separator(),
-                on_off(logs.follow),
+                on_off(logs.follow()),
                 theme.separator(),
-                on_off(logs.wrap)
+                on_off(logs.wrap())
             ),
             theme.muted(),
         ),
     ];
-    if logs.editing_search || !logs.search.is_empty() {
-        let cursor = if logs.editing_search {
+    if logs.editing_search() || !logs.search().is_empty() {
+        let cursor = if logs.editing_search() {
             theme.cursor()
         } else {
             ""
         };
         info.push(Span::styled(
-            format!("{}/{}{}", theme.separator(), logs.search, cursor),
+            format!("{}/{}{}", theme.separator(), logs.search(), cursor),
             theme.accent(),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(info)), info_area);
 
     let lines = logs.lines();
-    let body_area = match (&logs.status_message, lines.is_empty()) {
+    let body_area = match (logs.status_message(), lines.is_empty()) {
         // Keep the lines, but say why no new ones arrive (e.g. after a restart).
         (Some(message), false) => {
             let [message_area, rest] =
                 Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
             frame.render_widget(
-                Paragraph::new(Span::styled(message.clone(), theme.warning())),
+                Paragraph::new(Span::styled(message.to_string(), theme.warning())),
                 message_area,
             );
             rest
@@ -364,8 +364,8 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
     };
     if lines.is_empty() {
         let message = logs
-            .status_message
-            .clone()
+            .status_message()
+            .map(str::to_string)
             .unwrap_or_else(|| format!("Waiting for logs{}", theme.ellipsis()));
         frame.render_widget(
             Paragraph::new(Span::styled(message, theme.muted())).wrap(Wrap { trim: true }),
@@ -376,17 +376,17 @@ fn render_logs(frame: &mut Frame, area: Rect, detail: &ServiceDetailState, theme
 
     let width = body_area.width as usize;
     let height = body_area.height as usize;
-    let end = lines.len() - logs.scroll_from_bottom.min(lines.len());
-    let offset = if logs.wrap { 0 } else { logs.horizontal_offset };
+    let end = lines.len() - logs.scroll_from_bottom().min(lines.len());
+    let offset = logs.horizontal_offset();
     let rows_of = |index: usize| {
         let line = log_line(
             &lines[index],
             logs.is_match(index),
-            logs.current_match == Some(index),
+            logs.is_current_match(index),
             offset,
             theme,
         );
-        if logs.wrap {
+        if logs.wrap() {
             wrap_line(line, width)
         } else {
             vec![line]
@@ -449,7 +449,7 @@ fn render_deploys(
         .take(height)
         .map(|(index, deployment)| {
             let selected = index == detail.deploy_cursor;
-            let look = deployment_look(&deployment.status);
+            let look = look(&deployment.status);
             let source = match (&deployment.branch, &deployment.image_ref) {
                 (_, Some(image)) if deployment.commit_sha.is_none() => image.clone(),
                 (Some(branch), _) => branch.clone(),
@@ -457,7 +457,7 @@ fn render_deploys(
             };
             let marker = if deployment.is_live {
                 "live"
-            } else if deployment.status == "running" {
+            } else if deployment.status == DeploymentStatus::Running {
                 "ready"
             } else {
                 ""
@@ -513,7 +513,7 @@ fn render_deployment(
         );
         return;
     };
-    let look = deployment_look(&deployment.status);
+    let look = look(&deployment.status);
     let mut header = vec![Line::from(vec![
         Span::styled(
             format!("Deployment {}", short_ref(deployment)),

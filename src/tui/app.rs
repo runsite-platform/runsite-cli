@@ -1,21 +1,21 @@
-use super::action::{Action, Effect, FetchError, Mutation, Payload, ProfileEntry, Request};
-use super::action_keys::Confirm;
+use super::action::{Action, Effect, Mutation, Payload, ProfileEntry, Request};
+use super::action_gate::{ActionSlot, Confirm};
 use super::dashboard::{DashboardState, Pane, ProjectChoice, Resource};
-use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState};
-use super::login::{LoginState, LoginTab};
-use super::poller::{Cadence, Poller};
-use super::status::{database_look, deployment_in_progress, Tone};
-use crate::api::CurrentUser;
+use super::detail::{DatabaseDetailState, DetailTab, ServiceDetailState, Vanished};
+use super::keymap::{self, Command};
+use super::log_buffer::LogQuery;
+use super::login::LoginState;
+use super::poll_plan::desired_polls;
+use super::poller::{Poller, Ticket};
+use super::status::Tone;
+use crate::api::{Condition, Status, User};
+use crate::error::ApiError;
 use chrono::{DateTime, TimeDelta, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const TOAST_SECONDS: i64 = 4;
-/// How long actions stay blocked after one was accepted: two fast polls, so
-/// the new status or deployment has been seen before the next action.
-const SETTLE_SECONDS: i64 = 6;
-pub const RATE_LIMIT_MESSAGE: &str = "Rate limit reached, try again in a minute";
 pub const INVALID_KEY_NOTICE: &str = "Your API key is invalid or revoked";
 
 #[derive(Debug)]
@@ -25,7 +25,7 @@ pub struct Session {
     /// `RUNSITE_API_TOKEN` overrides the profile's key.
     pub env_token: bool,
     pub has_credentials: bool,
-    pub user: Option<CurrentUser>,
+    pub user: Option<User>,
     pub key_scope: Option<String>,
 }
 
@@ -36,6 +36,39 @@ pub enum Screen {
     DatabaseDetail(DatabaseDetailState),
     Login(LoginState),
     Blocked { reason: String },
+}
+
+/// The open screen's say in fetching: only detail screens own requests.
+impl Screen {
+    fn start_fetch(&mut self, request: Request) -> Option<LogQuery> {
+        match self {
+            Screen::ServiceDetail(detail) => detail.start_fetch(request),
+            _ => None,
+        }
+    }
+
+    fn fetch_failed(&mut self, request: Request, error: &ApiError) -> bool {
+        match self {
+            Screen::ServiceDetail(detail) => detail.fetch_failed(request, error),
+            _ => false,
+        }
+    }
+
+    fn apply(&mut self, request: Request, payload: Payload, now: DateTime<Utc>) -> Option<Payload> {
+        match self {
+            Screen::ServiceDetail(detail) => detail.apply(request, payload, now),
+            Screen::DatabaseDetail(database) => database.apply(request, payload),
+            _ => Some(payload),
+        }
+    }
+
+    fn vanished(&mut self, request: Request) -> Vanished {
+        match self {
+            Screen::ServiceDetail(detail) => detail.vanished(request),
+            Screen::DatabaseDetail(database) => database.vanished(request),
+            _ => Vanished::Unrelated,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -50,13 +83,6 @@ pub enum Overlay {
     Help,
     ProfilePicker(ProfilePicker),
     Confirm(Confirm),
-}
-
-/// A remote action that was sent: further actions wait for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PendingAction {
-    InFlight,
-    Settling { until: DateTime<Utc> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +116,7 @@ pub struct App {
     pub last_error: Option<String>,
     /// Project picked by the user per profile, saved to the config on exit.
     pub chosen_projects: BTreeMap<String, Uuid>,
-    pub pending_action: Option<PendingAction>,
+    pub actions: ActionSlot,
     pub exit: Option<ExitReason>,
 }
 
@@ -120,7 +146,7 @@ impl App {
             last_refresh: None,
             last_error: None,
             chosen_projects: BTreeMap::new(),
-            pending_action: None,
+            actions: ActionSlot::default(),
             exit: None,
         }
     }
@@ -138,70 +164,35 @@ impl App {
         });
     }
 
+    /// Forget everything tied to the previous credentials: answers still in
+    /// flight, polls, the pending action and the freshness line.
+    fn reset_session(&mut self, screen: Screen) {
+        self.generation += 1;
+        self.poller.clear();
+        self.overlay = None;
+        self.actions.clear();
+        self.last_refresh = None;
+        self.last_error = None;
+        self.screen = screen;
+    }
+
+    /// An empty dashboard on the project picked for `profile` during this run,
+    /// else on `fallback`.
+    fn fresh_dashboard(&self, profile: &str, fallback: Option<Uuid>) -> DashboardState {
+        let preferred = self.chosen_projects.get(profile).copied().or(fallback);
+        DashboardState::new(preferred)
+    }
+
     fn quit(&mut self) -> Vec<Effect> {
         self.exit = Some(ExitReason::Quit);
         vec![Effect::Exit]
     }
 
-    fn desired_polls(&self) -> Vec<(Request, Cadence)> {
-        let mut polls = match self.screen {
-            Screen::Login(_) | Screen::Blocked { .. } => return Vec::new(),
-            _ => vec![
-                (Request::CurrentUser, Cadence::Once),
-                (Request::KeyScope, Cadence::Once),
-            ],
-        };
-        match &self.screen {
-            Screen::Dashboard => polls.extend(self.dashboard_polls()),
-            Screen::ServiceDetail(detail) => polls.extend(service_polls(detail)),
-            Screen::DatabaseDetail(database) => {
-                let transitional = database
-                    .detail
-                    .as_ref()
-                    .is_some_and(|detail| database_look(&detail.status).transitional);
-                let interval = if transitional { 1 } else { 5 };
-                polls.push((
-                    Request::Database(database.database_id),
-                    Cadence::seconds(interval),
-                ));
-            }
-            Screen::Login(_) | Screen::Blocked { .. } => {}
-        }
-        polls
-    }
-
-    fn dashboard_polls(&self) -> Vec<(Request, Cadence)> {
-        let mut polls = vec![
-            (Request::Projects, Cadence::seconds(30)),
-            // Needed on every dashboard view: the Unassigned row only exists
-            // when this list has services without a project.
-            (Request::UnassignedServices, Cadence::seconds(30)),
-        ];
-        // Wait for the list: a project saved in the config may no longer exist.
-        if let (Some(_), Some(ProjectChoice::Project(id))) =
-            (&self.dashboard.projects, self.dashboard.selected_project)
-        {
-            polls.push((Request::ProjectDetail(id), Cadence::seconds(10)));
-        }
-        if self.dashboard.focus == Pane::Resources {
-            if let Some(Resource::Service(service)) = self.dashboard.selected_resource() {
-                polls.push((Request::LatestDeployment(service.id), Cadence::seconds(3)));
-            }
-        }
-        polls
-    }
-
-    fn fetch_effect(&mut self, request: Request) -> Effect {
-        match (request, &mut self.screen) {
-            (Request::Logs(service), Screen::ServiceDetail(detail)) => Effect::FetchLogs {
-                generation: self.generation,
-                service,
-                query: detail.logs.start_fetch(),
-            },
-            _ => Effect::Fetch {
-                generation: self.generation,
-                request,
-            },
+    fn fetch_effect(&mut self, request: Request, ticket: Ticket) -> Effect {
+        Effect::Fetch {
+            ticket,
+            request,
+            log_query: self.screen.start_fetch(request),
         }
     }
 
@@ -209,17 +200,12 @@ impl App {
         if effects.iter().any(|effect| matches!(effect, Effect::Exit)) {
             return effects;
         }
-        let desired = self.desired_polls();
+        let desired = desired_polls(&self.screen, &self.dashboard);
         self.poller.sync(&desired, self.now);
-        // A deployment state that is no longer polled goes stale: forget it, so the
-        // next visit waits for a fresh answer instead of trusting an old one.
         let on_dashboard = matches!(self.screen, Screen::Dashboard);
-        let poller = &self.poller;
-        self.dashboard.latest_deployments.retain(|service_id, _| {
-            on_dashboard && poller.is_active(&Request::LatestDeployment(*service_id))
-        });
-        for request in self.poller.take_due(self.now) {
-            effects.push(self.fetch_effect(request));
+        self.dashboard.forget_unpolled(on_dashboard);
+        for (request, ticket) in self.poller.take_due(self.now) {
+            effects.push(self.fetch_effect(request, ticket));
         }
         effects
     }
@@ -228,10 +214,7 @@ impl App {
         match action {
             Action::Tick { now } => {
                 self.now = now;
-                if matches!(self.pending_action, Some(PendingAction::Settling { until }) if until <= now)
-                {
-                    self.pending_action = None;
-                }
+                self.actions.tick(now);
                 if self
                     .toast
                     .as_ref()
@@ -248,11 +231,11 @@ impl App {
             }
             Action::Key(key) => self.handle_key(key),
             Action::Loaded {
-                generation,
+                ticket,
                 request,
                 result,
             } => {
-                if generation != self.generation || !self.poller.is_active(&request) {
+                if !self.poller.accepts(&request, ticket) {
                     return Vec::new();
                 }
                 match result {
@@ -272,13 +255,10 @@ impl App {
                 mutation,
                 result,
             } => {
+                self.actions.finish(generation, result.is_ok(), self.now);
                 if generation != self.generation {
-                    self.pending_action = None;
                     return Vec::new();
                 }
-                self.pending_action = result.is_ok().then_some(PendingAction::Settling {
-                    until: self.now + TimeDelta::seconds(SETTLE_SECONDS),
-                });
                 match result {
                     Ok(()) => {
                         self.show_toast(mutation.accepted_message(), Tone::Good);
@@ -302,82 +282,46 @@ impl App {
         }
     }
 
+    /// The open screen takes its own replies; the rest belong to the session
+    /// or to the dashboard, which outlives the screens opened from it.
     fn apply_payload(&mut self, request: Request, payload: Payload) {
-        match payload {
-            Payload::LatestDeployment(deployment) if matches!(self.screen, Screen::Dashboard) => {
-                if let Request::LatestDeployment(service_id) = request {
-                    self.dashboard
-                        .latest_deployments
-                        .insert(service_id, deployment.map(|deployment| *deployment));
-                }
-            }
-            Payload::CurrentUser(user) => self.session.user = Some(user),
-            Payload::KeyScope(identity) => self.session.key_scope = Some(identity.scope),
-            Payload::Projects(projects) => {
-                self.dashboard.projects = Some(projects);
-                self.dashboard.normalize_selection();
-            }
-            Payload::ProjectDetail(detail) => {
-                self.dashboard.details.insert(detail.id, detail);
-                self.dashboard.normalize_selection();
-            }
-            Payload::UnassignedServices(services) => {
-                self.dashboard.unassigned = Some(
-                    services
-                        .into_iter()
-                        .filter(|service| service.project_id.is_none())
-                        .collect(),
-                );
-                self.dashboard.normalize_selection();
-            }
-            Payload::Database(detail) => {
-                if let Screen::DatabaseDetail(database) = &mut self.screen {
-                    database.detail = Some(*detail);
-                }
-            }
-            payload => {
-                let now = self.now;
-                if let Screen::ServiceDetail(detail) = &mut self.screen {
-                    apply_service_payload(detail, payload, now);
-                }
-            }
+        match self.screen.apply(request, payload, self.now) {
+            Some(Payload::CurrentUser(user)) => self.session.user = Some(user),
+            Some(Payload::KeyScope(identity)) => self.session.key_scope = Some(identity.scope),
+            Some(payload) => self.dashboard.apply(request, payload),
+            None => {}
         }
     }
 
     /// 401 and a blocked account end the session whatever the request was.
-    fn end_session(&mut self, error: &FetchError) -> Option<Vec<Effect>> {
+    fn end_session(&mut self, error: &ApiError) -> Option<Vec<Effect>> {
         match error {
-            FetchError::Unauthorized { .. } => {
+            ApiError::Unauthorized { .. } => {
                 if self.session.env_token {
                     self.exit = Some(ExitReason::EnvTokenRejected);
                     return Some(vec![Effect::Exit]);
                 }
-                self.generation += 1;
                 self.session.has_credentials = false;
-                self.overlay = None;
-                self.poller.clear();
-                self.screen = Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE));
+                self.reset_session(Screen::Login(LoginState::with_notice(INVALID_KEY_NOTICE)));
                 Some(Vec::new())
             }
-            FetchError::Blocked { reason } => {
-                self.overlay = None;
-                self.poller.clear();
-                self.screen = Screen::Blocked {
+            ApiError::Blocked { reason } => {
+                self.reset_session(Screen::Blocked {
                     reason: reason.clone(),
-                };
+                });
                 Some(Vec::new())
             }
             _ => None,
         }
     }
 
-    fn handle_mutation_error(&mut self, mutation: Mutation, error: FetchError) -> Vec<Effect> {
+    fn handle_mutation_error(&mut self, mutation: Mutation, error: ApiError) -> Vec<Effect> {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
         match error {
-            FetchError::RateLimited => self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad),
-            FetchError::NotFound { .. } => {
+            ApiError::RateLimited => self.show_toast(ApiError::RateLimited.to_string(), Tone::Bad),
+            ApiError::NotFound { .. } => {
                 let target_gone = !matches!(mutation, Mutation::Rollback { .. });
                 if target_gone && !matches!(self.screen, Screen::Dashboard) {
                     self.screen = Screen::Dashboard;
@@ -385,90 +329,54 @@ impl App {
                 self.show_toast("No longer exists", Tone::Bad);
             }
             other => {
-                self.show_toast(other.message(), Tone::Bad);
+                self.show_toast(other.to_string(), Tone::Bad);
                 self.poller.refresh_all(self.now);
             }
         }
         Vec::new()
     }
 
-    fn handle_fetch_error(&mut self, request: Request, error: FetchError) -> Vec<Effect> {
+    fn handle_fetch_error(&mut self, request: Request, error: ApiError) -> Vec<Effect> {
         if let Some(effects) = self.end_session(&error) {
             return effects;
         }
+        self.poller
+            .record_failure(request, self.now, error.backs_off());
+        if self.screen.fetch_failed(request, &error) {
+            return Vec::new();
+        }
         match error {
-            // Already handled by `end_session`.
-            FetchError::Unauthorized { .. } | FetchError::Blocked { .. } => {}
-            FetchError::RateLimited => {
-                self.poller.record_failure(request, self.now, true);
-                self.show_toast(RATE_LIMIT_MESSAGE, Tone::Bad);
-            }
-            FetchError::Offline { .. } => {
-                self.poller.record_failure(request, self.now, true);
-            }
-            FetchError::NotFound { .. } => {
-                self.poller.record_failure(request, self.now, false);
-                self.handle_not_found(request);
-            }
-            FetchError::Rejected {
-                status: 400,
-                message,
-            } if matches!(request, Request::Logs(_)) => {
-                // "Unable to fetch logs…" is a state of the service, not an error.
-                self.poller.record_failure(request, self.now, false);
-                if let Screen::ServiceDetail(detail) = &mut self.screen {
-                    detail.logs.status_message = Some(message);
-                }
-            }
-            FetchError::Forbidden { message } | FetchError::Rejected { message, .. } => {
-                self.poller.record_failure(request, self.now, false);
+            ApiError::RateLimited => self.show_toast(ApiError::RateLimited.to_string(), Tone::Bad),
+            ApiError::NotFound { .. } => self.handle_not_found(request),
+            ApiError::Forbidden { message } | ApiError::Rejected { message, .. } => {
                 self.last_error = Some(message.clone());
                 self.show_toast(message, Tone::Bad);
+            }
+            // Offline shows in the status line; the rest ended the session above.
+            ApiError::Offline { .. } | ApiError::Unauthorized { .. } | ApiError::Blocked { .. } => {
             }
         }
         Vec::new()
     }
 
     fn handle_not_found(&mut self, request: Request) {
-        match (request, &mut self.screen) {
-            (Request::ProjectDetail(id), _) => {
-                // Drop it from the list too, so it is not polled again.
-                self.dashboard.details.remove(&id);
-                if let Some(projects) = &mut self.dashboard.projects {
-                    projects.retain(|project| project.id != id);
-                }
-                self.dashboard.normalize_selection();
-                self.show_toast("No longer exists", Tone::Bad);
-            }
-            (Request::Deployment(..), Screen::ServiceDetail(detail))
-                if detail.deployment_view.is_some() =>
-            {
-                detail.deployment_view = None;
-                self.show_toast("No longer exists", Tone::Bad);
-            }
-            (
-                Request::Service(_)
-                | Request::LatestDeployment(_)
-                | Request::Metrics(_)
-                | Request::MetricsHistory(_)
-                | Request::Logs(_)
-                | Request::Deployments(_),
-                Screen::ServiceDetail(_),
-            )
-            | (Request::Database(_), Screen::DatabaseDetail(_)) => {
+        match self.screen.vanished(request) {
+            Vanished::Whole => {
                 // A modal about the vanished resource must not survive it.
                 self.overlay = None;
                 self.screen = Screen::Dashboard;
-                self.show_toast("No longer exists", Tone::Bad);
             }
-            _ => {}
+            Vanished::Part => {}
+            Vanished::Unrelated if self.dashboard.vanished(request) => {}
+            Vanished::Unrelated => return,
         }
+        self.show_toast("No longer exists", Tone::Bad);
     }
 
     fn handle_login_result(
         &mut self,
         generation: u64,
-        result: Result<String, FetchError>,
+        result: Result<String, ApiError>,
     ) -> Vec<Effect> {
         if generation != self.generation {
             return Vec::new();
@@ -478,33 +386,25 @@ impl App {
         };
         match result {
             Ok(_email) => {
-                // Requests sent with the old key may still answer 401.
-                self.generation += 1;
                 self.session.has_credentials = true;
                 self.session.user = None;
                 self.session.key_scope = None;
-                self.poller.clear();
-                self.pending_action = None;
                 // The key may belong to another account: drop everything loaded
                 // with the old one, but keep the project the user was looking at.
                 let current_project = match self.dashboard.selected_project {
                     Some(ProjectChoice::Project(id)) => Some(id),
                     _ => None,
                 };
-                let preferred = self
-                    .chosen_projects
-                    .get(&self.session.profile)
-                    .copied()
-                    .or(current_project);
-                self.dashboard = DashboardState::new(preferred);
-                self.screen = Screen::Dashboard;
+                self.dashboard = self.fresh_dashboard(&self.session.profile, current_project);
+                // Requests sent with the old key may still answer 401.
+                self.reset_session(Screen::Dashboard);
             }
-            Err(FetchError::Blocked { reason }) => {
+            Err(ApiError::Blocked { reason }) => {
                 self.screen = Screen::Blocked { reason };
             }
             Err(error) => {
                 login.submitting = false;
-                login.error = Some(error.message());
+                login.error = Some(error.to_string());
             }
         }
         Vec::new()
@@ -514,148 +414,131 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return Vec::new();
         }
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        if control && key.code == KeyCode::Char('c') {
-            return self.quit();
+        // Ctrl+C quits from anywhere, even a text field or a pending login.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('c') => return self.quit(),
+                KeyCode::Char('z') => return Vec::new(),
+                _ => {}
+            }
         }
-        if control && key.code == KeyCode::Char('z') {
-            return Vec::new();
-        }
-        if self.overlay.is_some() {
-            return self.handle_overlay_key(key);
-        }
-        match self.screen {
-            Screen::Blocked { .. } => {
-                if key.code == KeyCode::Char('q') {
-                    return self.quit();
-                }
-                Vec::new()
-            }
-            Screen::Login(ref login) if login.navigating => {
-                if let Some(effects) = self.handle_global_key(key) {
-                    return effects;
-                }
-                if let Screen::Login(login) = &mut self.screen {
-                    if matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::Char('i')) {
-                        login.navigating = false;
-                    }
-                }
-                Vec::new()
-            }
-            Screen::Login(_) => self.handle_login_key(key),
-            Screen::Dashboard => {
-                if self.dashboard.editing_filter.is_some() {
-                    self.handle_filter_key(key);
-                    return Vec::new();
-                }
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                self.handle_dashboard_key(key);
-                Vec::new()
-            }
-            Screen::ServiceDetail(ref detail) => {
-                if detail.logs.editing_search {
-                    self.handle_search_key(key);
-                    return Vec::new();
-                }
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                self.handle_service_key(key);
-                Vec::new()
-            }
-            Screen::DatabaseDetail(_) => {
-                if let Some(effects) = self
-                    .handle_global_key(key)
-                    .or_else(|| self.handle_action_key(key))
-                {
-                    return effects;
-                }
-                if key.code == KeyCode::Esc {
-                    self.screen = Screen::Dashboard;
-                }
-                Vec::new()
-            }
+        match keymap::command_for(keymap::mode(self), &key) {
+            Some(command) => self.run_command(command, key),
+            None => Vec::new(),
         }
     }
 
-    /// Keys shared by every navigation screen. `None` when the key is not global.
-    fn handle_global_key(&mut self, key: KeyEvent) -> Option<Vec<Effect>> {
-        match key.code {
-            KeyCode::Char('q') => Some(self.quit()),
-            KeyCode::Char('?') => {
-                self.overlay = Some(Overlay::Help);
-                Some(Vec::new())
-            }
-            KeyCode::Char('r') => {
-                self.poller.refresh_all(self.now);
-                Some(Vec::new())
-            }
-            KeyCode::Char('P') => {
-                if self.session.env_token {
-                    self.show_toast(
-                        "Profiles are disabled: the env token overrides profiles",
-                        Tone::Bad,
-                    );
-                    return Some(Vec::new());
-                }
-                self.overlay = Some(Overlay::ProfilePicker(ProfilePicker::default()));
-                Some(vec![Effect::ListProfiles])
-            }
+    fn run_command(&mut self, command: Command, key: KeyEvent) -> Vec<Effect> {
+        let pressed_character = match key.code {
+            KeyCode::Char(character) => Some(character),
             _ => None,
-        }
-    }
-
-    fn handle_overlay_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        if matches!(self.overlay, Some(Overlay::Confirm(_))) {
-            return self.handle_confirm_key(key);
-        }
-        let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay else {
-            // Any key closes the help overlay.
-            self.overlay = None;
-            return Vec::new();
         };
-        let count = picker.entries.as_ref().map_or(0, Vec::len);
-        match key.code {
-            KeyCode::Esc => self.overlay = None,
-            KeyCode::Char('q') => return self.quit(),
-            KeyCode::Up | KeyCode::Char('k') => picker.cursor = picker.cursor.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') if count > 0 => {
-                picker.cursor = (picker.cursor + 1).min(count - 1)
+        match command {
+            Command::Quit => return self.quit(),
+            Command::OpenHelp => self.overlay = Some(Overlay::Help),
+            Command::Refresh => self.poller.refresh_all(self.now),
+            Command::OpenProfiles => return self.open_profiles(),
+            Command::Action(action_key) => self.request_action(action_key),
+            Command::CloseOverlay => self.overlay = None,
+            Command::PickerUp | Command::PickerDown => {
+                self.move_picker(command == Command::PickerDown)
             }
-            KeyCode::Enter => {
-                let chosen = picker
-                    .entries
-                    .as_ref()
-                    .and_then(|entries| entries.get(picker.cursor))
-                    .cloned();
-                if let Some(entry) = chosen {
-                    return self.switch_profile(entry);
+            Command::PickerChoose => return self.choose_profile(),
+            Command::ConfirmAction => return self.confirm_action(),
+            Command::CancelAction => self.overlay = None,
+            Command::ReturnToLoginForm => {
+                if let Screen::Login(login) = &mut self.screen {
+                    login.navigating = false;
                 }
             }
-            _ => {}
+            Command::LoginTab(_)
+            | Command::LoginFocus { .. }
+            | Command::LoginEscape
+            | Command::LoginErase
+            | Command::LoginSubmit
+            | Command::LoginType => return self.run_login_command(command, pressed_character),
+            Command::FilterEscape
+            | Command::FilterApply
+            | Command::FilterErase
+            | Command::FilterType => self.run_filter_command(command, pressed_character),
+            Command::SwitchPane => {
+                self.dashboard.focus = match self.dashboard.focus {
+                    Pane::Projects => Pane::Resources,
+                    Pane::Resources => Pane::Projects,
+                };
+            }
+            Command::CursorUp => self.move_cursor(self.dashboard.focus, -1),
+            Command::CursorDown => self.move_cursor(self.dashboard.focus, 1),
+            Command::FocusResources => self.dashboard.focus = Pane::Resources,
+            Command::FocusProjects => self.dashboard.focus = Pane::Projects,
+            Command::OpenResource => self.open_selected_resource(DetailTab::Overview),
+            Command::OpenResourceOnTab => {
+                if let (Some(tab), Some(Resource::Service(_))) = (
+                    pressed_character.and_then(DetailTab::from_digit),
+                    self.dashboard.selected_resource(),
+                ) {
+                    self.open_selected_resource(tab);
+                }
+            }
+            Command::OpenFilter => self.dashboard.editing_filter = Some(self.dashboard.focus),
+            Command::BackToDashboard => self.screen = Screen::Dashboard,
+            Command::Detail(detail_command) => {
+                let page = self.page_size();
+                let now = self.now;
+                if let Screen::ServiceDetail(detail) = &mut self.screen {
+                    detail.run_command(detail_command, pressed_character, page, now);
+                }
+            }
         }
         Vec::new()
     }
 
+    /// Rows of log or build output a PgUp/PgDn moves.
+    fn page_size(&self) -> usize {
+        (self.height as usize).saturating_sub(10).max(1)
+    }
+
+    fn open_profiles(&mut self) -> Vec<Effect> {
+        if self.session.env_token {
+            self.show_toast(
+                "Profiles are disabled: the env token overrides profiles",
+                Tone::Bad,
+            );
+            return Vec::new();
+        }
+        self.overlay = Some(Overlay::ProfilePicker(ProfilePicker::default()));
+        vec![Effect::ListProfiles]
+    }
+
+    fn move_picker(&mut self, down: bool) {
+        let Some(Overlay::ProfilePicker(picker)) = &mut self.overlay else {
+            return;
+        };
+        let count = picker.entries.as_ref().map_or(0, Vec::len);
+        picker.cursor = if down {
+            (picker.cursor + 1).min(count.saturating_sub(1))
+        } else {
+            picker.cursor.saturating_sub(1)
+        };
+    }
+
+    fn choose_profile(&mut self) -> Vec<Effect> {
+        let Some(Overlay::ProfilePicker(picker)) = &self.overlay else {
+            return Vec::new();
+        };
+        let chosen = picker
+            .entries
+            .as_ref()
+            .and_then(|entries| entries.get(picker.cursor))
+            .cloned();
+        match chosen {
+            Some(entry) => self.switch_profile(entry),
+            None => Vec::new(),
+        }
+    }
+
     fn switch_profile(&mut self, entry: ProfileEntry) -> Vec<Effect> {
-        self.overlay = None;
-        self.generation += 1;
-        self.poller.clear();
-        self.last_refresh = None;
-        let preferred = self
-            .chosen_projects
-            .get(&entry.name)
-            .copied()
-            .or(entry.current_project_id);
-        self.dashboard = DashboardState::new(preferred);
+        self.dashboard = self.fresh_dashboard(&entry.name, entry.current_project_id);
         self.session = Session {
             profile: entry.name.clone(),
             api_url: entry.api_url.clone(),
@@ -664,18 +547,18 @@ impl App {
             user: None,
             key_scope: None,
         };
-        self.screen = if entry.has_key {
+        self.reset_session(if entry.has_key {
             Screen::Dashboard
         } else {
             Screen::Login(LoginState::default())
-        };
+        });
         vec![Effect::SwitchProfile {
             profile: entry.name,
-            api_url: entry.api_url,
         }]
     }
 
-    fn handle_login_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    /// `character` is the pressed key when it was a character.
+    fn run_login_command(&mut self, command: Command, character: Option<char>) -> Vec<Effect> {
         let generation = self.generation;
         let Screen::Login(login) = &mut self.screen else {
             return Vec::new();
@@ -683,13 +566,10 @@ impl App {
         if login.submitting {
             return Vec::new();
         }
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Left if control => login.switch_tab(LoginTab::Password),
-            KeyCode::Right if control => login.switch_tab(LoginTab::ApiKey),
-            KeyCode::Tab => login.move_focus(true),
-            KeyCode::BackTab => login.move_focus(false),
-            KeyCode::Esc => {
+        match command {
+            Command::LoginTab(tab) => login.switch_tab(tab),
+            Command::LoginFocus { forward } => login.move_focus(forward),
+            Command::LoginEscape => {
                 let field = login.field_mut(login.focused_field());
                 if field.is_empty() {
                     login.navigating = true;
@@ -697,10 +577,10 @@ impl App {
                     field.clear();
                 }
             }
-            KeyCode::Backspace => {
+            Command::LoginErase => {
                 login.field_mut(login.focused_field()).pop();
             }
-            KeyCode::Enter => match login.credentials() {
+            Command::LoginSubmit => match login.credentials() {
                 Ok(credentials) => {
                     login.submitting = true;
                     login.error = None;
@@ -711,21 +591,23 @@ impl App {
                 }
                 Err(message) => login.error = Some(message.to_string()),
             },
-            KeyCode::Char(character) if !control => {
-                login.field_mut(login.focused_field()).push(character);
-                login.error = None;
+            Command::LoginType => {
+                if let Some(character) = character {
+                    login.field_mut(login.focused_field()).push(character);
+                    login.error = None;
+                }
             }
             _ => {}
         }
         Vec::new()
     }
 
-    fn handle_filter_key(&mut self, key: KeyEvent) {
+    fn run_filter_command(&mut self, command: Command, character: Option<char>) {
         let Some(pane) = self.dashboard.editing_filter else {
             return;
         };
-        match key.code {
-            KeyCode::Esc => {
+        match command {
+            Command::FilterEscape => {
                 let filter = self.dashboard.filter_mut(pane);
                 if filter.is_empty() {
                     self.dashboard.editing_filter = None;
@@ -733,85 +615,46 @@ impl App {
                     filter.clear();
                 }
             }
-            KeyCode::Enter => self.dashboard.editing_filter = None,
-            KeyCode::Backspace => {
+            Command::FilterApply => self.dashboard.editing_filter = None,
+            Command::FilterErase => {
                 self.dashboard.filter_mut(pane).pop();
             }
-            KeyCode::Char(character) => self.dashboard.filter_mut(pane).push(character),
-            _ => {}
-        }
-        self.dashboard.normalize_selection();
-    }
-
-    fn handle_dashboard_key(&mut self, key: KeyEvent) {
-        let focus = self.dashboard.focus;
-        match key.code {
-            KeyCode::Tab
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Char('h')
-            | KeyCode::Char('l') => {
-                self.dashboard.focus = match focus {
-                    Pane::Projects => Pane::Resources,
-                    Pane::Resources => Pane::Projects,
-                };
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_cursor(focus, -1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_cursor(focus, 1),
-            KeyCode::Enter if focus == Pane::Projects => self.dashboard.focus = Pane::Resources,
-            KeyCode::Enter => self.open_selected_resource(DetailTab::Overview),
-            KeyCode::Esc if focus == Pane::Resources => self.dashboard.focus = Pane::Projects,
-            KeyCode::Char('/') => self.dashboard.editing_filter = Some(focus),
-            KeyCode::Char(digit @ '1'..='3') if focus == Pane::Resources => {
-                if let (Some(tab), Some(Resource::Service(_))) = (
-                    DetailTab::from_digit(digit),
-                    self.dashboard.selected_resource(),
-                ) {
-                    self.open_selected_resource(tab);
+            Command::FilterType => {
+                if let Some(character) = character {
+                    self.dashboard.filter_mut(pane).push(character);
                 }
             }
             _ => {}
         }
+        self.dashboard.normalize_selection();
     }
 
     fn open_selected_resource(&mut self, tab: DetailTab) {
         let Some(resource) = self.dashboard.selected_resource() else {
             return;
         };
-        let (database_id, name, status, version) = match resource {
-            Resource::Service(service) if service.status == "pending_deletion" => {
-                // Every service endpoint answers 404 for these.
-                self.show_toast("Being deleted", Tone::Bad);
-                return;
-            }
-            Resource::Service(service) => {
-                self.screen =
-                    Screen::ServiceDetail(Box::new(ServiceDetailState::new(service.clone(), tab)));
-                return;
-            }
-            Resource::Postgres(database) => (
-                database.id,
-                database.name.clone(),
-                database.status.clone(),
-                database.postgres_version.clone(),
-            ),
-            Resource::Redis(database) => (
-                database.id,
-                database.name.clone(),
-                database.status.clone(),
-                database.redis_version.clone(),
-            ),
+        let condition = match resource {
+            Resource::Service(service) => service.status.condition(),
+            Resource::Postgres(database) | Resource::Redis(database) => database.status.condition(),
         };
-        if status == "pending_deletion" {
+        // Every endpoint of a resource being deleted answers 404.
+        if condition == Condition::Deleting {
             self.show_toast("Being deleted", Tone::Bad);
             return;
         }
-        self.screen = Screen::DatabaseDetail(DatabaseDetailState {
-            database_id,
-            name,
-            version,
-            detail: None,
-        });
+        self.screen = match resource {
+            Resource::Service(service) => {
+                Screen::ServiceDetail(Box::new(ServiceDetailState::new(service.clone(), tab)))
+            }
+            Resource::Postgres(database) | Resource::Redis(database) => {
+                Screen::DatabaseDetail(DatabaseDetailState {
+                    database_id: database.id,
+                    name: database.name.clone(),
+                    version: database.version.clone(),
+                    detail: None,
+                })
+            }
+        };
     }
 
     fn move_cursor(&mut self, pane: Pane, delta: isize) {
@@ -825,80 +668,6 @@ impl App {
             }
             Pane::Resources => self.dashboard.move_resource(delta),
         }
-    }
-}
-
-fn service_polls(detail: &ServiceDetailState) -> Vec<(Request, Cadence)> {
-    let id = detail.service_id;
-    let fast = if detail.transitional() { 1 } else { 3 };
-    let mut polls = vec![
-        (Request::Service(id), Cadence::seconds(fast)),
-        (Request::LatestDeployment(id), Cadence::seconds(fast)),
-    ];
-    let deployments_interval = if detail.deployment_in_progress() {
-        3
-    } else {
-        10
-    };
-    match detail.tab {
-        DetailTab::Overview => polls.extend([
-            (Request::Metrics(id), Cadence::seconds(5)),
-            (Request::MetricsHistory(id), Cadence::seconds(60)),
-            (
-                Request::Deployments(id),
-                Cadence::seconds(deployments_interval),
-            ),
-        ]),
-        DetailTab::Logs => polls.push((Request::Logs(id), Cadence::seconds(2))),
-        DetailTab::Deploys => polls.push((
-            Request::Deployments(id),
-            Cadence::seconds(deployments_interval),
-        )),
-    }
-    if let Some(view) = &detail.deployment_view {
-        let cadence = match &view.detail {
-            Some(deployment) if !deployment_in_progress(&deployment.status) => Cadence::Once,
-            _ => Cadence::seconds(3),
-        };
-        polls.push((Request::Deployment(id, view.id), cadence));
-    }
-    polls
-}
-
-fn apply_service_payload(detail: &mut ServiceDetailState, payload: Payload, now: DateTime<Utc>) {
-    match payload {
-        Payload::Service(service) if service.id == detail.service_id => {
-            detail.name = service.name.clone();
-            detail.service = Some(*service);
-        }
-        Payload::LatestDeployment(deployment) => {
-            detail.latest_deployment = deployment.map(|deployment| *deployment);
-            detail.deployments_checked = true;
-        }
-        Payload::Metrics(metrics) => detail.metrics = Some(metrics),
-        Payload::MetricsHistory(points) => detail.history = points,
-        Payload::Logs { body, query } => {
-            // Only the reply this buffer is waiting for: an answer to a request
-            // from before the screen was reopened would scramble the order.
-            if detail.logs.finish_fetch(query) {
-                detail.logs.ingest(&body, query, now);
-            }
-        }
-        Payload::Deployments(deployments) => {
-            detail.deploy_cursor = detail
-                .deploy_cursor
-                .min(deployments.len().saturating_sub(1));
-            detail.deployments = Some(deployments);
-            detail.deployments_checked = true;
-        }
-        Payload::Deployment(deployment) => {
-            if let Some(view) = &mut detail.deployment_view {
-                if view.id == deployment.id {
-                    view.detail = Some(*deployment);
-                }
-            }
-        }
-        _ => {}
     }
 }
 

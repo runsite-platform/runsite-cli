@@ -1,12 +1,14 @@
 mod action;
-mod action_keys;
+mod action_gate;
 mod actions;
 mod app;
 mod dashboard;
 mod detail;
 mod detail_keys;
+mod keymap;
 mod log_buffer;
 mod login;
+mod poll_plan;
 mod poller;
 mod status;
 mod theme;
@@ -21,8 +23,10 @@ mod app_tests;
 mod detail_tests;
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod runtime_tests;
 
-use crate::config::{self, Config};
+use crate::config::{ActiveProfile, Config, ConfigFile};
 use action::{Action, Effect, ProfileEntry};
 use anyhow::{bail, Result};
 use app::{App, ExitReason, Session};
@@ -30,11 +34,9 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use ratatui::crossterm::event::{Event, EventStream, KeyEventKind};
 use std::io::IsTerminal;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use theme::Theme;
 use tokio::sync::mpsc::{self, UnboundedSender};
-use uuid::Uuid;
 use worker::Worker;
 
 const TICK: Duration = Duration::from_millis(250);
@@ -59,10 +61,7 @@ fn profile_entries(config: &Config) -> Vec<ProfileEntry> {
             name: name.clone(),
             api_url: profile.api_url.clone(),
             has_key: profile.api_key.is_some(),
-            current_project_id: profile
-                .current_project_id
-                .as_deref()
-                .and_then(|id| Uuid::parse_str(id).ok()),
+            current_project_id: profile.selected_project(),
         })
         .collect();
     entries.sort_by(|left, right| left.name.cmp(&right.name));
@@ -70,9 +69,9 @@ fn profile_entries(config: &Config) -> Vec<ProfileEntry> {
 }
 
 struct Runtime {
-    config: Arc<Mutex<Config>>,
     worker: Worker,
     results: UnboundedSender<Action>,
+    config: ConfigFile,
 }
 
 impl Runtime {
@@ -81,14 +80,10 @@ impl Runtime {
         for effect in effects {
             match effect {
                 Effect::Fetch {
-                    generation,
+                    ticket,
                     request,
-                } => self.worker.fetch(generation, request),
-                Effect::FetchLogs {
-                    generation,
-                    service,
-                    query,
-                } => self.worker.fetch_logs(generation, service, query),
+                    log_query,
+                } => self.worker.fetch(ticket, request, log_query),
                 Effect::LogIn {
                     generation,
                     credentials,
@@ -98,17 +93,19 @@ impl Runtime {
                     mutation,
                 } => self.worker.mutate(generation, mutation),
                 Effect::ListProfiles => {
-                    let entries = config::read_current()
+                    let entries = self
+                        .config
+                        .read()
                         .map(|config| profile_entries(&config))
                         .unwrap_or_default();
                     let _ = self.results.send(Action::ProfilesListed(entries));
                 }
-                Effect::SwitchProfile { profile, api_url } => {
-                    if let Ok(fresh) = config::read_current() {
-                        *self.config.lock().unwrap() = fresh;
+                Effect::SwitchProfile { profile } => {
+                    // The picker read this profile from the file a moment ago,
+                    // so a failed reload is not worth interrupting the session.
+                    if let Ok(active) = self.config.load_profile(Some(&profile)) {
+                        self.worker = Worker::new(active, self.results.clone());
                     }
-                    self.worker =
-                        Worker::new(self.config.clone(), profile, api_url, self.results.clone());
                 }
                 Effect::Exit => return false,
             }
@@ -144,35 +141,18 @@ async fn termination_signal() {
     }
 }
 
-pub async fn run(config: Arc<Mutex<Config>>, profile_name: String) -> Result<()> {
-    let profile = config
-        .lock()
-        .unwrap()
-        .profiles
-        .get(&profile_name)
-        .cloned()
-        .unwrap_or_default();
-    let preferred_project = profile
-        .current_project_id
-        .as_deref()
-        .and_then(|id| Uuid::parse_str(id).ok());
-
-    let (results, mut incoming) = mpsc::unbounded_channel();
-    let worker = Worker::new(
-        config.clone(),
-        profile_name.clone(),
-        profile.api_url.clone(),
-        results.clone(),
-    );
-    let env_token = worker.uses_env_token();
+pub async fn run(profile: ActiveProfile, config: ConfigFile) -> Result<()> {
+    let preferred_project = profile.current_project_id();
     let session = Session {
-        profile: profile_name,
-        api_url: profile.api_url,
-        env_token,
-        has_credentials: env_token || profile.api_key.is_some(),
+        profile: profile.name(),
+        api_url: profile.api_url(),
+        env_token: profile.uses_env_token(),
+        has_credentials: profile.is_authenticated(),
         user: None,
         key_scope: None,
     };
+    let (results, mut incoming) = mpsc::unbounded_channel();
+    let worker = Worker::new(profile, results.clone());
 
     let theme = Theme::detect();
     let mut terminal = ratatui::try_init()?;
@@ -190,9 +170,9 @@ pub async fn run(config: Arc<Mutex<Config>>, profile_name: String) -> Result<()>
         (size.width, size.height),
     );
     let mut runtime = Runtime {
-        config,
         worker,
         results,
+        config,
     };
 
     let outcome = event_loop(&mut terminal, &mut app, &mut runtime, &theme, &mut incoming).await;
@@ -201,10 +181,7 @@ pub async fn run(config: Arc<Mutex<Config>>, profile_name: String) -> Result<()>
     // Save every profile even if the loop or one of the writes failed.
     let mut save_error = None;
     for (profile, project_id) in &app.chosen_projects {
-        let saved = config::update_profile(profile, |saved| {
-            saved.current_project_id = Some(project_id.to_string())
-        });
-        if let Err(error) = saved {
+        if let Err(error) = runtime.config.select_project(profile, *project_id) {
             save_error.get_or_insert(error);
         }
     }
