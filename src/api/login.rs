@@ -1,4 +1,4 @@
-use super::ApiClient;
+use super::{ApiClient, PasswordLogin};
 use anyhow::Result;
 
 /// What the user typed on a login form or passed on the command line.
@@ -18,6 +18,20 @@ impl ApiClient {
     /// A password login creates a new `write` key named after this machine; the
     /// session cookie from `/api/auth/login` authorizes that request.
     pub async fn log_in(&self, credentials: &Credentials) -> Result<LoginOutcome> {
+        self.log_in_with_code_prompt(credentials, || {
+            anyhow::bail!(
+                "this account uses two-factor authentication; run 'runsite login' in a terminal or use an API key"
+            )
+        })
+        .await
+    }
+
+    /// Like `log_in`, but asks for a two-factor code when the account needs one.
+    pub async fn log_in_with_code_prompt(
+        &self,
+        credentials: &Credentials,
+        prompt_code: impl FnOnce() -> Result<String>,
+    ) -> Result<LoginOutcome> {
         match credentials {
             Credentials::ApiKey(key) => {
                 let user = self.verify_api_key(key).await?;
@@ -27,7 +41,12 @@ impl ApiClient {
                 })
             }
             Credentials::Password { email, password } => {
-                let user = self.post_login(email, password).await?;
+                let user = match self.post_login(email, password).await? {
+                    PasswordLogin::Authenticated(user) => user,
+                    PasswordLogin::CodeRequired => {
+                        self.post_two_factor_code(prompt_code()?.trim()).await?
+                    }
+                };
                 let api_key = self.mint_api_key(&machine_key_name()).await?;
                 Ok(LoginOutcome {
                     email: user.email,
@@ -160,5 +179,78 @@ mod tests {
                 message: "Your account is awaiting review".to_string()
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_two_factor_account_is_asked_for_a_code_before_minting_the_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("set-cookie", "mfa_challenge=chal123; Path=/")
+                    .set_body_json(serde_json::json!({"mfa_required": true})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/2fa/verify"))
+            .and(header("cookie", "mfa_challenge=chal123"))
+            .and(body_partial_json(serde_json::json!({"code": "123456"})))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .append_header("set-cookie", "access_token=session123; Path=/")
+                    .append_header("set-cookie", "mfa_challenge=; Path=/; Max-Age=0")
+                    .set_body_raw(USER, "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/api-keys"))
+            .and(header("cookie", "access_token=session123"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(serde_json::json!({"plaintext_key": "ak_live_minted"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let outcome = anonymous_client(&server)
+            .log_in_with_code_prompt(
+                &Credentials::Password {
+                    email: "ada@example.com".to_string(),
+                    password: "hunter2".to_string(),
+                },
+                || Ok("123456".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.api_key, "ak_live_minted");
+    }
+
+    #[tokio::test]
+    async fn the_non_interactive_login_fails_clearly_when_a_code_is_required() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(
+                ResponseTemplate::new(202).set_body_json(serde_json::json!({"mfa_required": true})),
+            )
+            .mount(&server)
+            .await;
+
+        let error = anonymous_client(&server)
+            .log_in(&Credentials::Password {
+                email: "ada@example.com".to_string(),
+                password: "hunter2".to_string(),
+            })
+            .await
+            .err()
+            .unwrap();
+
+        assert!(error.to_string().contains("two-factor"));
     }
 }
