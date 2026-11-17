@@ -169,15 +169,38 @@ impl ApiClient {
     }
 
     /// Log in with email + password. The session lives in the client's cookie jar;
-    /// the response body carries the user, not a token.
-    pub async fn post_login(&self, email: &str, password: &str) -> Result<User> {
+    /// the response body carries the user, not a token. A 202 means the account
+    /// has two-factor auth and the pending login is held in a challenge cookie.
+    pub async fn post_login(&self, email: &str, password: &str) -> Result<PasswordLogin> {
+        let response = self
+            .http
+            .post(format!("{}/api/auth/login", self.base_url))
+            .json(&serde_json::json!({ "email": email, "password": password }))
+            .send()
+            .await
+            .map_err(|error| ApiError::network(&error))?;
+        if response.status() == reqwest::StatusCode::ACCEPTED {
+            return Ok(PasswordLogin::CodeRequired);
+        }
+        Ok(PasswordLogin::Authenticated(
+            self.handle_response(response).await?,
+        ))
+    }
+
+    /// Finish a two-step login with an authenticator or recovery code.
+    pub async fn post_two_factor_code(&self, code: &str) -> Result<User> {
         self.send(
             self.http
-                .post(format!("{}/api/auth/login", self.base_url))
-                .json(&serde_json::json!({ "email": email, "password": password })),
+                .post(format!("{}/api/auth/2fa/verify", self.base_url))
+                .json(&serde_json::json!({ "code": code })),
         )
         .await
     }
+}
+
+pub enum PasswordLogin {
+    Authenticated(User),
+    CodeRequired,
 }
 
 #[cfg(test)]

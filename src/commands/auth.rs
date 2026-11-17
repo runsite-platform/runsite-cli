@@ -64,7 +64,13 @@ pub async fn login(
         }
     };
 
-    let outcome = client.log_in(&credentials).await?;
+    let outcome = client
+        .log_in_with_code_prompt(&credentials, || {
+            Ok(Input::<String>::new()
+                .with_prompt("Authentication code")
+                .interact_text()?)
+        })
+        .await?;
     profile.store_api_key(outcome.api_key)?;
     Ok(LoggedIn {
         profile: profile.name(),
